@@ -1,70 +1,116 @@
-:root {
-  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
-  line-height: 1.5;
-  font-weight: 400;
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
-  color-scheme: light dark;
-  color: rgba(255, 255, 255, 0.87);
-  background-color: #242424;
+@layer base {
+  :root {
+    /* Cloud Dancer Palette */
+    --cloud-dancer: 240 242 239;
+    /* Pantone 11-4201 approx RGB */
+    --primary: 99 102 241;
+    /* Soft Indigo */
+    --secondary: 168 162 158;
+    /* Warm Stone */
+    --accent: 71 85 105;
+    /* Slate */
 
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
+    --bg-light: 250 250 252;
+    /* Very soft white/blue tint */
+    --bg-dark: 23 23 23;
+    /* Neutral dark, not blue-black */
+  }
 
-body {
-  margin: 0;
-  display: flex;
-  place-items: center;
-  min-width: 320px;
-  min-height: 100vh;
-}
+  body {
+    @apply bg-[rgb(var(--cloud-dancer))] text-slate-800 transition-colors duration-300;
+  }
 
-h1 {
-  font-size: 3.2em;
-  line-height: 1.1;
-}
-
-button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  background-color: #1a1a1a;
-  cursor: pointer;
-  transition: border-color 0.25s;
-}
-button:hover {
-  border-color: #646cff;
-}
-button:focus,
-button:focus-visible {
-  outline: 4px auto -webkit-focus-ring-color;
+  [data-theme='dark'] body {
+    @apply bg-neutral-900 text-neutral-200;
+  }
 }
 
-.card {
-  padding: 2em;
+@layer components {
+  .btn {
+    @apply px-6 py-2.5 rounded-full font-medium transition-all duration-300 active:scale-95 flex items-center justify-center gap-2 shadow-sm hover:shadow-md;
+  }
+
+  .btn-primary {
+    @apply bg-slate-900 text-white hover:bg-slate-800 dark:bg-white dark:text-black dark:hover:bg-gray-200 border border-transparent;
+  }
+
+  .btn-outline {
+    @apply border border-slate-200 text-slate-600 hover:border-slate-400 hover:text-slate-900 dark:border-neutral-700 dark:text-neutral-400 dark:hover:border-neutral-500 bg-transparent;
+  }
+
+  .card {
+    @apply bg-white/60 backdrop-blur-md border border-white/40 rounded-2xl p-6 transition-all duration-300;
+    box-shadow: 0 8px 30px rgb(0 0 0 / 0.04);
+  }
+
+  .card:hover {
+    box-shadow: 0 8px 30px rgb(0 0 0 / 0.08);
+  }
+
+  /* Dark mode overrides for card */
+  [data-theme='dark'] .card {
+    @apply bg-neutral-800/50 border-neutral-700 shadow-none;
+  }
+
+  .glass-panel {
+    @apply bg-white/80 backdrop-blur-xl border border-white/60 shadow-lg rounded-3xl;
+  }
+
+  [data-theme='dark'] .glass-panel {
+    @apply bg-neutral-900/80 border-neutral-800;
+  }
+
+  .glass-input {
+    @apply bg-white/50 border border-transparent focus:border-slate-300 focus:bg-white focus:ring-4 focus:ring-slate-100/50 rounded-xl transition-all outline-none text-slate-800 placeholder-slate-400;
+  }
+
+  [data-theme='dark'] .glass-input {
+    @apply bg-neutral-800 border-neutral-700 text-white placeholder-neutral-500 focus:border-neutral-600 focus:ring-neutral-800;
+  }
+
+  .nav-item-active {
+    @apply bg-white text-slate-900 shadow-sm font-semibold rounded-xl;
+  }
+
+  [data-theme='dark'] .nav-item-active {
+    @apply bg-neutral-800 text-white;
+  }
+
+  .nav-item-active::before {
+    content: none;
+    /* Removed the side bar accent for a cleaner pill look */
+  }
 }
 
-.logs {
-    background: #111;
-    padding: 1rem;
-    border-radius: 8px;
-    font-family: monospace;
-    text-align: left;
-    max-height: 300px;
-    overflow-y: auto;
-    width: 600px;
-    margin-top: 20px;
+/* Animations */
+@keyframes fade-in-up {
+  0% {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
-.log-entry {
-    margin-bottom: 0.5rem;
-    border-bottom: 1px solid #333;
-    padding-bottom: 0.2rem;
+
+.animate-fade-in-up {
+  animation: fade-in-up 0.5s ease-out forwards;
 }
-.error { color: #ff6b6b; }
-.success { color: #51cf66; }
-.info { color: #ccc; }
+
+.delay-100 {
+  animation-delay: 100ms;
+}
+
+.delay-200 {
+  animation-delay: 200ms;
+}
+
+.delay-300 {
+  animation-delay: 300ms;
+}
