@@ -1,6 +1,6 @@
 import { useNavigate } from 'react-router-dom';
 import { ArrowRight, Zap, Shield, Globe } from 'lucide-react';
-import bgImage from '../assets/images/image.jpg';
+import bgImage from '../assets/images/image.png';
 
 export default function LandingPage() {
     const navigate = useNavigate();
