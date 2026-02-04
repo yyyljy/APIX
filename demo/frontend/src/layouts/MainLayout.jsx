@@ -7,9 +7,7 @@ export default function MainLayout({ children }) {
     const location = useLocation();
 
     const navItems = [
-        { label: 'Marketplace', path: '/' },
-        { label: 'Providers', path: '/providers' },
-        { label: 'Docs', path: '/docs' },
+        { label: 'Demo', path: '/' },
     ];
 
     return (
@@ -23,11 +21,11 @@ export default function MainLayout({ children }) {
                                 <span className="mb-0.5">A</span>
                             </div>
                             <span className="text-xl font-bold tracking-tight text-slate-800 dark:text-white">
-                                APIX
+                                APIX SDK Demo
                             </span>
                         </Link>
 
-                        <nav className="hidden md:flex items-center gap-1 p-1 bg-slate-100/50 dark:bg-slate-800/50 rounded-full">
+                        <nav className="flex items-center gap-1 p-1 bg-slate-100/50 dark:bg-slate-800/50 rounded-full">
                             {navItems.map((item) => (
                                 <Link
                                     key={item.label}
