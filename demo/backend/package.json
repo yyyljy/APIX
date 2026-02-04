@@ -12,6 +12,7 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "apix-sdk-node": "file:../../apix-sdk-node/apix-sdk-node-1.0.0.tgz",
     "cors": "^2.8.6",
     "dotenv": "^17.2.3",
     "express": "^5.2.1"

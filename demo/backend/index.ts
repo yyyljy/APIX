@@ -1,6 +1,6 @@
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
-import { ApixMiddleware } from '../apix-sdk-node/index';
+import { ApixMiddleware } from 'apix-sdk-node';
 
 const app = express();
 const port = 3000;

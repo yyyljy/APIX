@@ -28,3 +28,4 @@ go.work
 
 # Go Vendor
 vendor/
+apix-sdk-node/apix-sdk-node-1.0.0.tgz

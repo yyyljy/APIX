@@ -14,11 +14,13 @@ go run main.go
 
 ## 2. Start Demo Server (Node.js/Express)
 This acts as the "Seller" API that uses the Apix SDK.
+*Note: Ensure `apix-sdk-node` is built and installed if you have made changes to the SDK.*
 
 **Terminal 2:**
 ```bash
-cd demo-server
-npm start
+cd demo/backend
+npm install
+npm run start
 ```
 *Expected Output:* `Demo Server running at http://localhost:3000`
 
@@ -27,7 +29,8 @@ This is the demo UI to compare Free vs Paid usage.
 
 **Terminal 3:**
 ```bash
-cd poc/frontend
+cd demo/frontend
+npm install
 npm run dev
 ```
 *Open your browser to:* `http://localhost:5173`
