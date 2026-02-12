@@ -7,6 +7,31 @@ export interface VerificationResult {
     token?: string;
     message?: string;
 }
+export interface PaymentDetails {
+    requestId: string;
+    chainId: number;
+    currency: string;
+    amount: string;
+    recipient: string;
+}
+export interface PaymentResponse {
+    headers: {
+        'WWW-Authenticate': string;
+    };
+    body: {
+        error: string;
+        message: string;
+        details: {
+            request_id: string;
+            chain_id: number;
+            payment_info: {
+                currency: string;
+                amount: string;
+                recipient: string;
+            };
+        };
+    };
+}
 export declare class ApixMiddleware {
     private config;
     private facilitatorUrl;
@@ -16,5 +41,10 @@ export declare class ApixMiddleware {
      * @param txHash The transaction hash from the client.
      */
     verifyPayment(txHash: string): Promise<VerificationResult>;
+    /**
+     * Creates a standardized 402 Payment Required response.
+     * @param details The payment details required from the client.
+     */
+    createPaymentRequest(details: PaymentDetails): PaymentResponse;
 }
 //# sourceMappingURL=index.d.ts.map

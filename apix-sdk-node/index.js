@@ -42,6 +42,31 @@ class ApixMiddleware {
             };
         }
     }
+    /**
+     * Creates a standardized 402 Payment Required response.
+     * @param details The payment details required from the client.
+     */
+    createPaymentRequest(details) {
+        const authHeader = `Apix realm="Apix Protected", request_id="${details.requestId}", price="${details.amount}", currency="${details.currency}", pay_to="${details.recipient}"`;
+        return {
+            headers: {
+                'WWW-Authenticate': authHeader
+            },
+            body: {
+                error: "Payment Required",
+                message: "Payment Required. Please check WWW-Authenticate header or body for details.",
+                details: {
+                    request_id: details.requestId,
+                    chain_id: details.chainId,
+                    payment_info: {
+                        currency: details.currency,
+                        amount: details.amount,
+                        recipient: details.recipient
+                    }
+                }
+            }
+        };
+    }
 }
 exports.ApixMiddleware = ApixMiddleware;
 //# sourceMappingURL=index.js.map

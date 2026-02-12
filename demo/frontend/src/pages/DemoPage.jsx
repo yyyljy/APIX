@@ -55,7 +55,12 @@ const DemoPage = () => {
             if (res.status === 402) {
                 const errorData = await res.json();
                 console.warn("[Apix] >> Received 402 Payment Required:", errorData);
-                setApixResult(`Received 402 Payment Required.\nServer says: "${errorData.message}"\n\nInitiating Wallet Payment...`);
+
+                // Log WWW-Authenticate header for verification
+                const authHeader = res.headers.get('www-authenticate');
+                console.log("[Apix] >> WWW-Authenticate Header:", authHeader);
+
+                setApixResult(`Received 402 Payment Required.\nServer says: "${errorData.message}"\nHeader: ${authHeader}\n\nInitiating Wallet Payment...`);
 
                 // 3. Simulate Wallet Interaction (Metamask/Phantom)
                 await new Promise(resolve => setTimeout(resolve, 1500));
@@ -66,7 +71,7 @@ const DemoPage = () => {
                 console.log("[Apix] 3. Retrying request with Proof (TxHash)...");
                 res = await fetch('http://localhost:3000/apix-product', {
                     headers: {
-                        'x-apix-auth': mockTxHash
+                        'Authorization': `Apix ${mockTxHash}`
                     }
                 });
             }

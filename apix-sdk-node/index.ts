@@ -11,6 +11,33 @@ export interface VerificationResult {
     message?: string;
 }
 
+export interface PaymentDetails {
+    requestId: string;
+    chainId: number;
+    currency: string;
+    amount: string;
+    recipient: string;
+}
+
+export interface PaymentResponse {
+    headers: {
+        'WWW-Authenticate': string;
+    };
+    body: {
+        error: string;
+        message: string;
+        details: {
+            request_id: string;
+            chain_id: number;
+            payment_info: {
+                currency: string;
+                amount: string;
+                recipient: string;
+            };
+        };
+    };
+}
+
 export class ApixMiddleware {
     private config: ApixConfig;
     private facilitatorUrl: string;
@@ -54,5 +81,32 @@ export class ApixMiddleware {
                 message: 'Failed to connect to Apix Cloud.'
             };
         }
+    }
+
+    /**
+     * Creates a standardized 402 Payment Required response.
+     * @param details The payment details required from the client.
+     */
+    createPaymentRequest(details: PaymentDetails): PaymentResponse {
+        const authHeader = `Apix realm="Apix Protected", request_id="${details.requestId}", price="${details.amount}", currency="${details.currency}", pay_to="${details.recipient}"`;
+
+        return {
+            headers: {
+                'WWW-Authenticate': authHeader
+            },
+            body: {
+                error: "Payment Required",
+                message: "Payment Required. Please check WWW-Authenticate header or body for details.",
+                details: {
+                    request_id: details.requestId,
+                    chain_id: details.chainId,
+                    payment_info: {
+                        currency: details.currency,
+                        amount: details.amount,
+                        recipient: details.recipient
+                    }
+                }
+            }
+        };
     }
 }

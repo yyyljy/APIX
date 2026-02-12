@@ -46,13 +46,30 @@ const stripeMiddleware = (req: Request, res: Response, next: NextFunction) => {
 
 // Apix Middleware Wrapper
 const apixMiddlewareWrapper = async (req: Request, res: Response, next: NextFunction) => {
-    const txHash = req.headers['x-apix-auth'] as string;
+    const authHeader = req.headers['authorization'];
+
+    // Parse Authorization: Apix <tx_hash>
+    let txHash = '';
+    if (authHeader && authHeader.startsWith('Apix ')) {
+        txHash = authHeader.split(' ')[1];
+    }
 
     if (!txHash) {
-        res.status(402).json({
-            error: "Payment Required",
-            message: "Please provide a valid transaction hash in 'x-apix-auth' header."
-        });
+        // Standard x402/L402 Pattern: Return WWW-Authenticate header
+        // Note: In a real app, request_id, price, etc. would be dynamic. 
+        // For this demo, we use static or mock values matching the body.
+        const paymentDetails = {
+            requestId: "req_550e8400-e29b",
+            chainId: 43114,
+            currency: "AVAX",
+            amount: "0.100000000000000000",
+            recipient: "0x71C7656EC7ab88b098defB751B7401B5f6d8976F"
+        };
+
+        const paymentResponse = apix.createPaymentRequest(paymentDetails);
+
+        res.set(paymentResponse.headers);
+        res.status(402).json(paymentResponse.body);
         return;
     }
 
