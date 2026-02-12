@@ -1,11 +1,17 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
-	"encoding/json"
+	"time"
+
+	"github.com/golang-jwt/jwt/v5"
 )
+
+// Secret key for signing JWTs (Mock for MVP)
+var jwtSecret = []byte("apix-mvp-secret-key")
 
 // Request payload for verification
 type VerifyRequest struct {
@@ -16,7 +22,14 @@ type VerifyRequest struct {
 type VerifyResponse struct {
 	Valid   bool   `json:"valid"`
 	Message string `json:"message"`
-	Token   string `json:"token,omitempty"` // Future: JWT
+	Token   string `json:"token,omitempty"`
+}
+
+// Claims structure
+type ApixClaims struct {
+	TxHash      string `json:"tx_hash"`
+	MaxRequests int    `json:"max_requests"`
+	jwt.RegisteredClaims
 }
 
 func verifyHandler(w http.ResponseWriter, r *http.Request) {
@@ -45,10 +58,30 @@ func verifyHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Mock Logic: Always return valid for now
 	// Future: Check Avalanche L1 via RPC
+
+	// Create JWT
+	claims := ApixClaims{
+		TxHash:      req.TxHash,
+		MaxRequests: 100, // Hardcoded limit for MVP
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(1 * time.Minute)), // 1 Minute Session
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			Issuer:    "apix-cloud",
+		},
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	tokenString, err := token.SignedString(jwtSecret)
+	if err != nil {
+		log.Printf("Error signing token: %v", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
 	resp := VerifyResponse{
 		Valid:   true,
-		Message: "Mock verification successful",
-		Token:   "mock-jwt-token-idx-123", 
+		Message: "Verification successful",
+		Token:   tokenString,
 	}
 
 	w.Header().Set("Content-Type", "application/json")

@@ -48,16 +48,14 @@ const stripeMiddleware = (req: Request, res: Response, next: NextFunction) => {
 const apixMiddlewareWrapper = async (req: Request, res: Response, next: NextFunction) => {
     const authHeader = req.headers['authorization'];
 
-    // Parse Authorization: Apix <tx_hash>
-    let txHash = '';
+    // Parse Authorization: Apix <token>
+    let token = '';
     if (authHeader && authHeader.startsWith('Apix ')) {
-        txHash = authHeader.split(' ')[1];
+        token = authHeader.split(' ')[1];
     }
 
-    if (!txHash) {
+    if (!token) {
         // Standard x402/L402 Pattern: Return WWW-Authenticate header
-        // Note: In a real app, request_id, price, etc. would be dynamic. 
-        // For this demo, we use static or mock values matching the body.
         const paymentDetails = {
             requestId: "req_550e8400-e29b",
             chainId: 43114,
@@ -73,19 +71,57 @@ const apixMiddlewareWrapper = async (req: Request, res: Response, next: NextFunc
         return;
     }
 
-    console.log(`Apix Middleware: Verifying hash ${txHash}`);
-    const result = await apix.verifyPayment(txHash);
+    let validToken = '';
 
-    if (!result.success) {
-        res.status(403).json({
-            error: "Forbidden",
-            message: "Apix verification failed."
+    // Heuristic: If token starts with 0x, treat as TxHash (Delegated Verification)
+    // Otherwise treat as JWT (Session Validation)
+    if (token.startsWith('0x') && token.length < 100) {
+        console.log(`Apix Middleware: Verifying hash ${token}`);
+        const result = await apix.verifyPayment(token);
+
+        if (!result.success || !result.token) {
+            res.status(403).json({
+                error: "Forbidden",
+                message: "Apix verification failed."
+            });
+            return;
+        }
+        validToken = result.token;
+    } else {
+        // JWT Validation
+        if (apix.validateSession(token)) {
+            validToken = token;
+        } else {
+            res.status(403).json({
+                error: "Forbidden",
+                message: "Invalid or expired Apix session."
+            });
+            return;
+        }
+    }
+
+    // Atomic Deduction Logic: Start Request
+    if (!apix.startRequest(validToken)) {
+        res.status(402).json({
+            error: "Payment Required",
+            message: "Session quota exceeded."
         });
         return;
     }
 
-    // Inject proof if needed
-    (req as any).apixProof = result.token;
+    // Hook into response finish to commit/rollback
+    res.on('finish', () => {
+        if (res.statusCode >= 200 && res.statusCode < 500) {
+            apix.commitRequest(validToken);
+            // console.log("Apix: Request Committed");
+        } else {
+            apix.rollbackRequest(validToken);
+            console.log("Apix: Request Rolled Back (Quota Refunded)");
+        }
+    });
+
+    // Inject proof (JWT) so controller can return it to client
+    (req as any).apixProof = validToken;
     next();
 };
 

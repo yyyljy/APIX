@@ -35,12 +35,33 @@ export interface PaymentResponse {
 export declare class ApixMiddleware {
     private config;
     private facilitatorUrl;
+    private sessionCache;
     constructor(config?: ApixConfig);
     /**
      * Verifies a payment transaction hash with Apix Cloud.
      * @param txHash The transaction hash from the client.
      */
     verifyPayment(txHash: string): Promise<VerificationResult>;
+    /**
+     * Validates an existing session token (JWT).
+     * @param token The JWT session token.
+     */
+    validateSession(token: string): boolean;
+    /**
+     * Starts a request: marks simple "pending" state or just check quota.
+     * For MVP Atomic Deduction: we assume optimistic, deduct on success?
+     * Or deduct on start (PENDING), and verify success to keep it deducted, or rollback on failure.
+     * Plan says: "Request Start: Mark session usage as PENDING."
+     */
+    startRequest(token: string): boolean;
+    /**
+     * Commits the deduction (request succeeded).
+     */
+    commitRequest(token: string): void;
+    /**
+     * Rolls back the deduction (request failed).
+     */
+    rollbackRequest(token: string): void;
     /**
      * Creates a standardized 402 Payment Required response.
      * @param details The payment details required from the client.

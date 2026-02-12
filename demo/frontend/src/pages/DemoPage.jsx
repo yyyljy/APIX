@@ -1,11 +1,16 @@
-
 import React, { useState } from 'react';
+import PaymentModal from '../components/PaymentModal';
 
 const DemoPage = () => {
     const [stripeResult, setStripeResult] = useState(null);
     const [apixResult, setApixResult] = useState(null);
     const [showStripeModal, setShowStripeModal] = useState(false);
     const [isProcessingStripe, setIsProcessingStripe] = useState(false);
+
+    // Apix State
+    const [showApixModal, setShowApixModal] = useState(false);
+    const [isProcessingApix, setIsProcessingApix] = useState(false);
+    const [paymentDetails, setPaymentDetails] = useState(null);
 
     // Mock Stripe Flow
     const handleStripeClick = () => {
@@ -42,46 +47,84 @@ const DemoPage = () => {
         }
     };
 
-    // Mock Apix Flow (Updated for 402)
-    const callApixApi = async () => {
+    // --- Apix Flow (Dynamic) ---
+
+    const initiateApixFlow = async () => {
         try {
             setApixResult("1. Requesting Resource...");
             console.log("[Apix] 1. Requesting Resource without Payment Proof...");
 
             // 1. Try accessing WITHOUT payment headers first
-            let res = await fetch('http://localhost:3000/apix-product'); // No headers
+            const res = await fetch('http://localhost:3000/apix-product'); // No headers
 
             // 2. Expect 402 Payment Required
             if (res.status === 402) {
                 const errorData = await res.json();
                 console.warn("[Apix] >> Received 402 Payment Required:", errorData);
 
-                // Log WWW-Authenticate header for verification
-                const authHeader = res.headers.get('www-authenticate');
-                console.log("[Apix] >> WWW-Authenticate Header:", authHeader);
+                // Parse details from body (or header if preferred, body is easier in JS)
+                const details = errorData.details;
 
-                setApixResult(`Received 402 Payment Required.\nServer says: "${errorData.message}"\nHeader: ${authHeader}\n\nInitiating Wallet Payment...`);
-
-                // 3. Simulate Wallet Interaction (Metamask/Phantom)
-                await new Promise(resolve => setTimeout(resolve, 1500));
-                const mockTxHash = "0x9876543210fedcba";
-                console.log(`[Apix] >> Wallet Payment Complete! TxHash: ${mockTxHash}`);
-
-                // 4. Retry with Proof (Auth Header)
-                console.log("[Apix] 3. Retrying request with Proof (TxHash)...");
-                res = await fetch('http://localhost:3000/apix-product', {
-                    headers: {
-                        'Authorization': `Apix ${mockTxHash}`
-                    }
+                // Set state for Modal
+                setPaymentDetails({
+                    amount: details.payment_info.amount,
+                    currency: details.payment_info.currency,
+                    recipient: details.payment_info.recipient,
+                    requestId: details.request_id,
+                    chainId: details.chain_id
                 });
+
+                setApixResult(`Received 402 Payment Required.\nServer demands: ${details.payment_info.amount} ${details.payment_info.currency}\nReceiver: ${details.payment_info.recipient}\n\nPrompting User for Payment...`);
+
+                // Open Modal
+                setShowApixModal(true);
+            } else {
+                // Unexpected success (maybe free tier?)
+                const data = await res.json();
+                setApixResult(JSON.stringify(data, null, 2));
             }
 
-            const data = await res.json();
-            console.log("[Apix] >> Access Granted:", data);
-            setApixResult(JSON.stringify(data, null, 2));
         } catch (err) {
             console.error(err);
             setApixResult('Error: ' + err.message);
+        }
+    };
+
+    const confirmApixPayment = async () => {
+        if (!paymentDetails) return;
+
+        setIsProcessingApix(true);
+
+        // 3. Simulate Wallet Interaction (Metamask/Phantom)
+        // In real app: ethers.js sendTransaction(to, value)
+        await new Promise(resolve => setTimeout(resolve, 2000)); // Simulate signing
+
+        const mockTxHash = "0x" + Array(64).fill(0).map(() => Math.floor(Math.random() * 16).toString(16)).join('');
+        console.log(`[Apix] >> Wallet Payment Complete! TxHash: ${mockTxHash}`);
+
+        setApixResult(prev => prev + `\n\nPayment Sent!\nTxHash: ${mockTxHash}\n\nVerifying with Server...`);
+
+        // 4. Retry with Proof (Auth Header)
+        try {
+            const res = await fetch('http://localhost:3000/apix-product', {
+                headers: {
+                    'Authorization': `Apix ${mockTxHash}`
+                }
+            });
+
+            const data = await res.json();
+
+            // Close Modal
+            setShowApixModal(false);
+            setIsProcessingApix(false);
+
+            console.log("[Apix] >> Access Granted:", data);
+            setApixResult(JSON.stringify(data, null, 2));
+
+        } catch (err) {
+            console.error("Verification Error", err);
+            setApixResult(prev => prev + `\n\nVerification Failed: ${err.message}`);
+            setIsProcessingApix(false);
         }
     };
 
@@ -138,6 +181,15 @@ const DemoPage = () => {
                 </div>
             )}
 
+            {/* Apix Payment Modal */}
+            <PaymentModal
+                isOpen={showApixModal}
+                onClose={() => setShowApixModal(false)}
+                onConfirm={confirmApixPayment}
+                paymentDetails={paymentDetails}
+                isProcessing={isProcessingApix}
+            />
+
             {/* Left: Traditional Stripe */}
             <div className="bg-white p-6 rounded-lg shadow-md border-t-4 border-indigo-500">
                 <h2 className="text-2xl font-bold mb-2 text-indigo-700">Traditional Payment</h2>
@@ -169,7 +221,7 @@ const DemoPage = () => {
                     User pays (L1) → Transaction Hash → Backend Verification.
                 </p>
                 <button
-                    onClick={callApixApi}
+                    onClick={initiateApixFlow}
                     className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 px-4 rounded transition"
                 >
                     Buy with Crypto (10 AVAX)
@@ -191,3 +243,4 @@ const DemoPage = () => {
 };
 
 export default DemoPage;
+
