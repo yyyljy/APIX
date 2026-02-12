@@ -1,11 +1,10 @@
 import axios from 'axios';
 import * as jwt from 'jsonwebtoken';
 
-const JWT_SECRET = "apix-mvp-secret-key"; // Shared secret for MVP
-
 export interface ApixConfig {
     apiKey?: string;
     facilitatorUrl?: string;
+    jwtSecret?: string;
 }
 
 export interface VerificationResult {
@@ -17,28 +16,34 @@ export interface VerificationResult {
 export interface PaymentDetails {
     requestId: string;
     chainId: number;
+    network: string;
     currency: string;
     amount: string;
+    amountWei: string;
     recipient: string;
+    minConfirmations?: number;
 }
 
 export interface PaymentResponse {
     headers: {
         'WWW-Authenticate': string;
+        'PAYMENT-REQUIRED': string;
     };
     body: {
         error: string;
         message: string;
         details: {
-            request_id: string;
-            chain_id: number;
-            payment_info: {
-                currency: string;
-                amount: string;
-                recipient: string;
+                    request_id: string;
+                    chain_id: number;
+                    network: string;
+                    payment_info: {
+                        currency: string;
+                        amount: string;
+                        amount_wei: string;
+                        recipient: string;
+                    };
+                };
             };
-        };
-    };
 }
 
 interface SessionData {
@@ -51,10 +56,15 @@ export class ApixMiddleware {
     private config: ApixConfig;
     private facilitatorUrl: string;
     private sessionCache: Map<string, SessionData>;
+    private jwtSecret: string;
 
     constructor(config: ApixConfig = {}) {
         this.config = config;
         this.facilitatorUrl = config.facilitatorUrl || 'http://localhost:8080';
+        this.jwtSecret = config.jwtSecret || process.env.APIX_JWT_SECRET || '';
+        if (!this.jwtSecret) {
+            throw new Error('Missing APIX_JWT_SECRET (or provide jwtSecret in ApixMiddleware config).');
+        }
         this.sessionCache = new Map();
     }
 
@@ -62,20 +72,21 @@ export class ApixMiddleware {
      * Verifies a payment transaction hash with Apix Cloud.
      * @param txHash The transaction hash from the client.
      */
-    async verifyPayment(txHash: string): Promise<VerificationResult> {
+    async verifyPayment(txHash: string, payment?: PaymentDetails): Promise<VerificationResult> {
         if (!txHash) {
             return { success: false, message: 'Transaction hash is missing.' };
         }
 
-        // 1. Check Local Cache first (if txHash is used as key, but here we use token as key usually)
-        // However, initial request only has txHash. 
-        // We could cache verified txHash -> token mapping if we wanted, but for MVP we rely on client sending token after first verify?
-        // Plan says: "SDK uses in-memory caching (Redis/Map) to validate the JWT for subsequent calls"
-        // So verifyPayment is for the INITIAL entry.
-
         try {
             const response = await axios.post(`${this.facilitatorUrl}/v1/verify`, {
-                tx_hash: txHash
+                tx_hash: txHash,
+                request_id: payment?.requestId,
+                chain_id: payment?.chainId,
+                network: payment?.network,
+                recipient: payment?.recipient,
+                amount_wei: payment?.amountWei,
+                currency: payment?.currency,
+                min_confirmations: payment?.minConfirmations
             });
 
             if (response.data && response.data.valid && response.data.token) {
@@ -83,7 +94,7 @@ export class ApixMiddleware {
 
                 // Decode and Cache
                 try {
-                    const decoded = jwt.verify(token, JWT_SECRET) as any;
+                    const decoded = jwt.verify(token, this.jwtSecret) as any;
 
                     this.sessionCache.set(token, {
                         claims: decoded,
@@ -190,11 +201,25 @@ export class ApixMiddleware {
      * @param details The payment details required from the client.
      */
     createPaymentRequest(details: PaymentDetails): PaymentResponse {
+        const paymentRequired = {
+            version: 'x402-draft',
+            request_id: details.requestId,
+            chain_id: details.chainId,
+            network: details.network,
+            payment_info: {
+                currency: details.currency,
+                amount: details.amount,
+                amount_wei: details.amountWei,
+                recipient: details.recipient
+            }
+        };
+        const paymentRequiredBase64 = Buffer.from(JSON.stringify(paymentRequired), 'utf8').toString('base64');
         const authHeader = `Apix realm="Apix Protected", request_id="${details.requestId}", price="${details.amount}", currency="${details.currency}", pay_to="${details.recipient}"`;
 
         return {
             headers: {
-                'WWW-Authenticate': authHeader
+                'WWW-Authenticate': authHeader,
+                'PAYMENT-REQUIRED': paymentRequiredBase64
             },
             body: {
                 error: "Payment Required",
@@ -202,9 +227,11 @@ export class ApixMiddleware {
                 details: {
                     request_id: details.requestId,
                     chain_id: details.chainId,
+                    network: details.network,
                     payment_info: {
                         currency: details.currency,
                         amount: details.amount,
+                        amount_wei: details.amountWei,
                         recipient: details.recipient
                     }
                 }

@@ -1,6 +1,7 @@
 export interface ApixConfig {
     apiKey?: string;
     facilitatorUrl?: string;
+    jwtSecret?: string;
 }
 export interface VerificationResult {
     success: boolean;
@@ -10,13 +11,17 @@ export interface VerificationResult {
 export interface PaymentDetails {
     requestId: string;
     chainId: number;
+    network: string;
     currency: string;
     amount: string;
+    amountWei: string;
     recipient: string;
+    minConfirmations?: number;
 }
 export interface PaymentResponse {
     headers: {
         'WWW-Authenticate': string;
+        'PAYMENT-REQUIRED': string;
     };
     body: {
         error: string;
@@ -24,9 +29,11 @@ export interface PaymentResponse {
         details: {
             request_id: string;
             chain_id: number;
+            network: string;
             payment_info: {
                 currency: string;
                 amount: string;
+                amount_wei: string;
                 recipient: string;
             };
         };
@@ -36,12 +43,13 @@ export declare class ApixMiddleware {
     private config;
     private facilitatorUrl;
     private sessionCache;
+    private jwtSecret;
     constructor(config?: ApixConfig);
     /**
      * Verifies a payment transaction hash with Apix Cloud.
      * @param txHash The transaction hash from the client.
      */
-    verifyPayment(txHash: string): Promise<VerificationResult>;
+    verifyPayment(txHash: string, payment?: PaymentDetails): Promise<VerificationResult>;
     /**
      * Validates an existing session token (JWT).
      * @param token The JWT session token.

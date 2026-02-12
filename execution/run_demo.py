@@ -1,7 +1,6 @@
 import subprocess
 import time
 import os
-import signal
 import sys
 
 def run_demo():
@@ -10,18 +9,23 @@ def run_demo():
     """
     processes = []
     
+    env = os.environ.copy()
+    env.setdefault("APIX_JWT_SECRET", "apix-dev-local-secret-change-me")
+    env.setdefault("APIX_JWT_KID", "dev-v1")
+    env.setdefault("APIX_ENABLE_MOCK_VERIFY", "true")
+    env.setdefault("APIX_MIN_CONFIRMATIONS", "1")
+
     try:
         print("Starting Apix Cloud (Go)...")
-        # Assuming run from project root
-        p1 = subprocess.Popen(["go", "run", "main.go"], cwd=os.path.abspath("apix-cloud"))
+        p1 = subprocess.Popen(["go", "run", "main.go"], cwd=os.path.abspath("apix-cloud"), env=env)
         processes.append(p1)
         
         print("Starting Demo Backend (Node)...")
-        p2 = subprocess.Popen(["npm", "start"], cwd=os.path.abspath("demo/backend"), shell=True) # shell=True for npm on windows
+        p2 = subprocess.Popen(["npm.cmd", "start"], cwd=os.path.abspath("demo/backend"), env=env)
         processes.append(p2)
         
         print("Starting Demo Frontend (Vite)...")
-        p3 = subprocess.Popen(["npm", "run", "dev"], cwd=os.path.abspath("demo/frontend"), shell=True)
+        p3 = subprocess.Popen(["npm.cmd", "run", "dev"], cwd=os.path.abspath("demo/frontend"), env=env)
         processes.append(p3)
         
         print("All services started. Press Ctrl+C to stop.")

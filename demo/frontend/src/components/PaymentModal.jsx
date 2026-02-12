@@ -1,4 +1,4 @@
-import React from 'react';
+﻿import React from 'react';
 
 const PaymentModal = ({ isOpen, onClose, onConfirm, paymentDetails, isProcessing }) => {
     if (!isOpen) return null;
@@ -6,69 +6,62 @@ const PaymentModal = ({ isOpen, onClose, onConfirm, paymentDetails, isProcessing
     const { amount, currency, recipient, requestId } = paymentDetails;
 
     return (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 backdrop-blur-sm animate-in fade-in duration-200">
-            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden transform transition-all scale-100">
-                {/* Header */}
-                <div className="bg-emerald-600 p-5 flex justify-between items-center text-white">
-                    <h3 className="font-bold flex items-center gap-2 text-lg">
-                        <span className="bg-white/20 p-1.5 rounded-lg text-sm font-mono">Apix</span>
-                        Wallet Payment
-                    </h3>
-                    <button
-                        onClick={onClose}
-                        className="text-white/80 hover:text-white transition-colors p-1 rounded-full hover:bg-white/10"
-                        disabled={isProcessing}
-                    >
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                        </svg>
-                    </button>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/55 p-4 backdrop-blur-sm">
+            <div className="panel-strong w-full max-w-lg overflow-hidden bg-white">
+                <div className="border-b border-slate-200 bg-slate-900 px-6 py-4 text-white">
+                    <div className="flex items-center justify-between">
+                        <div>
+                            <h3 className="text-base font-bold">Wallet Payment Authorization</h3>
+                            <p className="mt-1 text-xs text-slate-300">x402 challenge settlement for protected API access</p>
+                        </div>
+                        <button
+                            onClick={onClose}
+                            disabled={isProcessing}
+                            className="rounded-md p-1 text-white/80 transition hover:bg-white/10 hover:text-white disabled:cursor-not-allowed"
+                        >
+                            x
+                        </button>
+                    </div>
                 </div>
 
-                {/* Body */}
-                <div className="p-6 space-y-6">
-                    <div className="text-center">
-                        <p className="text-gray-500 text-sm mb-1">Total Due</p>
-                        <div className="text-4xl font-extrabold text-gray-800 flex items-center justify-center gap-2">
-                            {amount} <span className="text-xl text-gray-500 font-medium">{currency}</span>
+                <div className="space-y-5 p-6">
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-center">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Total Due</p>
+                        <div className="mt-2 text-3xl font-extrabold text-slate-900">
+                            {amount} <span className="text-xl font-semibold text-slate-500">{currency}</span>
                         </div>
                     </div>
 
-                    <div className="bg-gray-50 rounded-xl p-4 space-y-3 border border-gray-100">
-                        <div className="flex justify-between text-sm">
-                            <span className="text-gray-500">To (Recipient)</span>
-                            <span className="font-mono text-gray-700 font-medium truncate w-32" title={recipient}>{recipient}</span>
+                    <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-4 text-sm">
+                        <div className="flex items-center justify-between gap-3">
+                            <span className="text-slate-500">Recipient</span>
+                            <span className="max-w-[220px] truncate font-mono text-xs text-slate-800" title={recipient}>
+                                {recipient}
+                            </span>
                         </div>
-                        <div className="flex justify-between text-sm">
-                            <span className="text-gray-500">Request ID</span>
-                            <span className="font-mono text-gray-700 font-medium truncate w-32" title={requestId}>{requestId}</span>
+                        <div className="flex items-center justify-between gap-3">
+                            <span className="text-slate-500">Request ID</span>
+                            <span className="max-w-[220px] truncate font-mono text-xs text-slate-800" title={requestId}>
+                                {requestId}
+                            </span>
                         </div>
-                        <div className="flex justify-between text-sm">
-                            <span className="text-gray-500">Network</span>
-                            <span className="font-medium text-emerald-600">Avalanche C-Chain</span>
+                        <div className="flex items-center justify-between gap-3">
+                            <span className="text-slate-500">Network</span>
+                            <span className="font-semibold text-emerald-700">Avalanche C-Chain</span>
                         </div>
                     </div>
 
-                    <div className="text-xs text-gray-400 text-center px-4">
-                        By confirming, you agree to sign a transaction with your wallet to send the required funds.
-                    </div>
+                    <p className="text-xs leading-5 text-slate-500">
+                        By confirming, your wallet signs and submits a transaction. API access is granted after payment
+                        proof verification.
+                    </p>
 
                     <button
                         onClick={onConfirm}
                         disabled={isProcessing}
-                        className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3.5 rounded-xl transition-all active:scale-[0.98] shadow-lg shadow-emerald-200 flex justify-center items-center gap-2 disabled:opacity-70 disabled:cursor-not-allowed"
+                        className="btn btn-primary w-full disabled:cursor-not-allowed disabled:opacity-70"
                     >
-                        {isProcessing ? (
-                            <>
-                                <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                </svg>
-                                Processing Transaction...
-                            </>
-                        ) : (
-                            <>Confirm Payment</>
-                        )}
+                        {isProcessing ? 'Processing Transaction...' : 'Confirm Wallet Payment'}
                     </button>
                 </div>
             </div>

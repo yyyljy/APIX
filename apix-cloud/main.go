@@ -1,21 +1,46 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
+	"math/big"
 	"net/http"
+	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 )
 
-// Secret key for signing JWTs (Mock for MVP)
-var jwtSecret = []byte("apix-mvp-secret-key")
+type Config struct {
+	JWTSecret               []byte
+	JWTIssuer               string
+	JWTKeyID                string
+	JWTTTL                  time.Duration
+	RPCURL                  string
+	RPCTimeout              time.Duration
+	RPCMaxRetries           int
+	EnableMockVerify        bool
+	DefaultMinConfirmations uint64
+}
+
+var appConfig Config
 
 // Request payload for verification
 type VerifyRequest struct {
-	TxHash string `json:"tx_hash"`
+	TxHash           string `json:"tx_hash"`
+	RequestID        string `json:"request_id,omitempty"`
+	ChainID          int64  `json:"chain_id,omitempty"`
+	Network          string `json:"network,omitempty"` // CAIP-2 style, e.g. eip155:43114
+	Recipient        string `json:"recipient,omitempty"`
+	AmountWei        string `json:"amount_wei,omitempty"`
+	Currency         string `json:"currency,omitempty"`
+	MinConfirmations uint64 `json:"min_confirmations,omitempty"`
 }
 
 // Response payload
@@ -23,20 +48,58 @@ type VerifyResponse struct {
 	Valid   bool   `json:"valid"`
 	Message string `json:"message"`
 	Token   string `json:"token,omitempty"`
+	Code    string `json:"code,omitempty"`
 }
 
 // Claims structure
 type ApixClaims struct {
 	TxHash      string `json:"tx_hash"`
 	MaxRequests int    `json:"max_requests"`
+	RequestID   string `json:"request_id,omitempty"`
+	Network     string `json:"network,omitempty"`
+	Recipient   string `json:"recipient,omitempty"`
+	AmountWei   string `json:"amount_wei,omitempty"`
+	ChainID     int64  `json:"chain_id,omitempty"`
+	Currency    string `json:"currency,omitempty"`
 	jwt.RegisteredClaims
 }
 
+type rpcRequest struct {
+	JSONRPC string      `json:"jsonrpc"`
+	ID      int         `json:"id"`
+	Method  string      `json:"method"`
+	Params  interface{} `json:"params"`
+}
+
+type rpcResponse struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      int             `json:"id"`
+	Result  json.RawMessage `json:"result"`
+	Error   *rpcError       `json:"error"`
+}
+
+type rpcError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+type ethTransaction struct {
+	Hash        string `json:"hash"`
+	To          string `json:"to"`
+	Value       string `json:"value"`
+	BlockNumber string `json:"blockNumber"`
+}
+
+type ethTransactionReceipt struct {
+	TransactionHash string `json:"transactionHash"`
+	BlockNumber     string `json:"blockNumber"`
+	Status          string `json:"status"`
+}
+
 func verifyHandler(w http.ResponseWriter, r *http.Request) {
-	// Enable CORS for frontend/demo-server
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, PAYMENT-SIGNATURE")
 
 	if r.Method == "OPTIONS" {
 		w.WriteHeader(http.StatusOK)
@@ -50,31 +113,49 @@ func verifyHandler(w http.ResponseWriter, r *http.Request) {
 
 	var req VerifyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid_request_body", "Invalid request body")
 		return
 	}
 
-	log.Printf("Received verification request for TxHash: %s", req.TxHash)
+	if req.MinConfirmations == 0 {
+		req.MinConfirmations = appConfig.DefaultMinConfirmations
+	}
+	if err := validateVerifyRequest(req, appConfig.EnableMockVerify); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
 
-	// Mock Logic: Always return valid for now
-	// Future: Check Avalanche L1 via RPC
+	log.Printf("Verification request received tx_hash=%s network=%s request_id=%s", req.TxHash, req.Network, req.RequestID)
 
-	// Create JWT
+	if !appConfig.EnableMockVerify {
+		if err := verifyOnChain(req, appConfig); err != nil {
+			writeError(w, http.StatusForbidden, "verification_failed", err.Error())
+			return
+		}
+	}
+
 	claims := ApixClaims{
 		TxHash:      req.TxHash,
-		MaxRequests: 100, // Hardcoded limit for MVP
+		MaxRequests: 100,
+		RequestID:   req.RequestID,
+		Network:     req.Network,
+		Recipient:   req.Recipient,
+		AmountWei:   req.AmountWei,
+		ChainID:     req.ChainID,
+		Currency:    req.Currency,
 		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(1 * time.Minute)), // 1 Minute Session
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(appConfig.JWTTTL)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			Issuer:    "apix-cloud",
+			Issuer:    appConfig.JWTIssuer,
 		},
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	tokenString, err := token.SignedString(jwtSecret)
+	token.Header["kid"] = appConfig.JWTKeyID
+	tokenString, err := token.SignedString(appConfig.JWTSecret)
 	if err != nil {
 		log.Printf("Error signing token: %v", err)
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "signing_error", "Internal server error")
 		return
 	}
 
@@ -88,11 +169,301 @@ func verifyHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
+func loadConfig() (Config, error) {
+	secret := strings.TrimSpace(os.Getenv("APIX_JWT_SECRET"))
+	if secret == "" {
+		return Config{}, errors.New("missing required env APIX_JWT_SECRET")
+	}
+
+	issuer := strings.TrimSpace(os.Getenv("APIX_JWT_ISSUER"))
+	if issuer == "" {
+		issuer = "apix-cloud"
+	}
+
+	keyID := strings.TrimSpace(os.Getenv("APIX_JWT_KID"))
+	if keyID == "" {
+		keyID = "v1"
+	}
+
+	ttlSeconds := 60
+	if raw := strings.TrimSpace(os.Getenv("APIX_JWT_TTL_SECONDS")); raw != "" {
+		v, err := strconv.Atoi(raw)
+		if err != nil || v <= 0 {
+			return Config{}, fmt.Errorf("invalid APIX_JWT_TTL_SECONDS: %q", raw)
+		}
+		ttlSeconds = v
+	}
+
+	enableMockVerify := strings.EqualFold(strings.TrimSpace(os.Getenv("APIX_ENABLE_MOCK_VERIFY")), "true")
+	rpcURL := strings.TrimSpace(os.Getenv("APIX_RPC_URL"))
+	if !enableMockVerify && rpcURL == "" {
+		return Config{}, errors.New("missing required env APIX_RPC_URL (or set APIX_ENABLE_MOCK_VERIFY=true for local demo)")
+	}
+	rpcTimeoutMS := 8000
+	if raw := strings.TrimSpace(os.Getenv("APIX_RPC_TIMEOUT_MS")); raw != "" {
+		v, err := strconv.Atoi(raw)
+		if err != nil || v <= 0 {
+			return Config{}, fmt.Errorf("invalid APIX_RPC_TIMEOUT_MS: %q", raw)
+		}
+		rpcTimeoutMS = v
+	}
+	rpcMaxRetries := 2
+	if raw := strings.TrimSpace(os.Getenv("APIX_RPC_MAX_RETRIES")); raw != "" {
+		v, err := strconv.Atoi(raw)
+		if err != nil || v < 0 {
+			return Config{}, fmt.Errorf("invalid APIX_RPC_MAX_RETRIES: %q", raw)
+		}
+		rpcMaxRetries = v
+	}
+
+	minConf := uint64(1)
+	if raw := strings.TrimSpace(os.Getenv("APIX_MIN_CONFIRMATIONS")); raw != "" {
+		v, err := strconv.ParseUint(raw, 10, 64)
+		if err != nil || v == 0 {
+			return Config{}, fmt.Errorf("invalid APIX_MIN_CONFIRMATIONS: %q", raw)
+		}
+		minConf = v
+	}
+
+	return Config{
+		JWTSecret:               []byte(secret),
+		JWTIssuer:               issuer,
+		JWTKeyID:                keyID,
+		JWTTTL:                  time.Duration(ttlSeconds) * time.Second,
+		RPCURL:                  rpcURL,
+		RPCTimeout:              time.Duration(rpcTimeoutMS) * time.Millisecond,
+		RPCMaxRetries:           rpcMaxRetries,
+		EnableMockVerify:        enableMockVerify,
+		DefaultMinConfirmations: minConf,
+	}, nil
+}
+
+func validateVerifyRequest(req VerifyRequest, enableMock bool) error {
+	if strings.TrimSpace(req.TxHash) == "" {
+		return errors.New("tx_hash is required")
+	}
+	if enableMock {
+		return nil
+	}
+	if strings.TrimSpace(req.Network) == "" {
+		return errors.New("network is required")
+	}
+	if strings.TrimSpace(req.Recipient) == "" {
+		return errors.New("recipient is required")
+	}
+	if strings.TrimSpace(req.AmountWei) == "" {
+		return errors.New("amount_wei is required")
+	}
+	return nil
+}
+
+func verifyOnChain(req VerifyRequest, cfg Config) error {
+	var tx ethTransaction
+	if err := rpcCall(cfg.RPCURL, "eth_getTransactionByHash", []interface{}{req.TxHash}, &tx); err != nil {
+		return fmt.Errorf("failed to get transaction: %w", err)
+	}
+	if tx.Hash == "" {
+		return errors.New("transaction not found")
+	}
+	if tx.BlockNumber == "" || tx.BlockNumber == "0x" {
+		return errors.New("transaction is not confirmed yet")
+	}
+
+	var receipt ethTransactionReceipt
+	if err := rpcCall(cfg.RPCURL, "eth_getTransactionReceipt", []interface{}{req.TxHash}, &receipt); err != nil {
+		return fmt.Errorf("failed to get receipt: %w", err)
+	}
+	if receipt.TransactionHash == "" {
+		return errors.New("transaction receipt not found")
+	}
+	if !strings.EqualFold(receipt.Status, "0x1") {
+		return errors.New("transaction execution failed")
+	}
+
+	expectedRecipient := strings.ToLower(strings.TrimSpace(req.Recipient))
+	actualRecipient := strings.ToLower(strings.TrimSpace(tx.To))
+	if expectedRecipient != actualRecipient {
+		return fmt.Errorf("recipient mismatch expected=%s actual=%s", req.Recipient, tx.To)
+	}
+
+	valueWei, ok := new(big.Int).SetString(strings.TrimPrefix(tx.Value, "0x"), 16)
+	if !ok {
+		return errors.New("failed to parse transaction value")
+	}
+	requiredWei, ok := new(big.Int).SetString(strings.TrimSpace(req.AmountWei), 10)
+	if !ok {
+		return errors.New("failed to parse amount_wei")
+	}
+	if valueWei.Cmp(requiredWei) < 0 {
+		return fmt.Errorf("insufficient payment expected=%s actual=%s", req.AmountWei, valueWei.String())
+	}
+
+	if err := verifyNetwork(cfg.RPCURL, req); err != nil {
+		return err
+	}
+	if err := verifyConfirmations(cfg.RPCURL, tx.BlockNumber, req.MinConfirmations); err != nil {
+		return err
+	}
+	return nil
+}
+
+func verifyNetwork(rpcURL string, req VerifyRequest) error {
+	networkChainID, err := chainIDFromNetwork(req.Network)
+	if err != nil {
+		return err
+	}
+	rpcChainID, err := getRPCChainID(rpcURL)
+	if err != nil {
+		return fmt.Errorf("failed to get chain id from rpc: %w", err)
+	}
+	if rpcChainID != networkChainID {
+		return fmt.Errorf("network mismatch expected_chain=%d rpc_chain=%d", networkChainID, rpcChainID)
+	}
+	if req.ChainID != 0 && req.ChainID != networkChainID {
+		return fmt.Errorf("chain_id mismatch request_chain=%d network_chain=%d", req.ChainID, networkChainID)
+	}
+	return nil
+}
+
+func verifyConfirmations(rpcURL, txBlockHex string, minConfirmations uint64) error {
+	txBlock, err := hexToUint64(txBlockHex)
+	if err != nil {
+		return fmt.Errorf("failed to parse transaction block number: %w", err)
+	}
+	var latestBlockHex string
+	if err := rpcCall(rpcURL, "eth_blockNumber", []interface{}{}, &latestBlockHex); err != nil {
+		return fmt.Errorf("failed to get latest block number: %w", err)
+	}
+	latestBlock, err := hexToUint64(latestBlockHex)
+	if err != nil {
+		return fmt.Errorf("failed to parse latest block number: %w", err)
+	}
+	if latestBlock < txBlock {
+		return errors.New("latest block is behind transaction block")
+	}
+	confirmations := latestBlock - txBlock + 1
+	if confirmations < minConfirmations {
+		return fmt.Errorf("insufficient confirmations required=%d actual=%d", minConfirmations, confirmations)
+	}
+	return nil
+}
+
+func getRPCChainID(rpcURL string) (int64, error) {
+	var chainIDHex string
+	if err := rpcCall(rpcURL, "eth_chainId", []interface{}{}, &chainIDHex); err != nil {
+		return 0, err
+	}
+	parsed, err := hexToUint64(chainIDHex)
+	if err != nil {
+		return 0, err
+	}
+	return int64(parsed), nil
+}
+
+func chainIDFromNetwork(network string) (int64, error) {
+	parts := strings.Split(strings.TrimSpace(network), ":")
+	if len(parts) != 2 || parts[0] != "eip155" {
+		return 0, fmt.Errorf("network must be CAIP-2 format eip155:<chain_id>, got %q", network)
+	}
+	chainID, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil || chainID <= 0 {
+		return 0, fmt.Errorf("invalid chain id in network %q", network)
+	}
+	return chainID, nil
+}
+
+func hexToUint64(hexValue string) (uint64, error) {
+	cleaned := strings.TrimPrefix(strings.TrimSpace(hexValue), "0x")
+	if cleaned == "" {
+		return 0, errors.New("empty hex value")
+	}
+	return strconv.ParseUint(cleaned, 16, 64)
+}
+
+func rpcCall(rpcURL, method string, params interface{}, out interface{}) error {
+	payload := rpcRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  method,
+		Params:  params,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, rpcURL, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	timeout := appConfig.RPCTimeout
+	if timeout <= 0 {
+		timeout = 8 * time.Second
+	}
+	attempts := appConfig.RPCMaxRetries + 1
+	if attempts < 1 {
+		attempts = 1
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		client := &http.Client{Timeout: timeout}
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+		} else {
+			respBody, readErr := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if readErr != nil {
+				lastErr = readErr
+			} else if resp.StatusCode >= 400 {
+				lastErr = fmt.Errorf("rpc http error status=%d", resp.StatusCode)
+			} else {
+				var rpcResp rpcResponse
+				if err := json.Unmarshal(respBody, &rpcResp); err != nil {
+					lastErr = err
+				} else if rpcResp.Error != nil {
+					lastErr = fmt.Errorf("rpc error code=%d message=%s", rpcResp.Error.Code, rpcResp.Error.Message)
+				} else if string(rpcResp.Result) == "null" {
+					return nil
+				} else if err := json.Unmarshal(rpcResp.Result, out); err != nil {
+					lastErr = err
+				} else {
+					return nil
+				}
+			}
+		}
+
+		if attempt < attempts {
+			time.Sleep(time.Duration(attempt) * 150 * time.Millisecond)
+		}
+	}
+	return lastErr
+}
+
+func writeError(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(VerifyResponse{
+		Valid:   false,
+		Code:    code,
+		Message: message,
+	})
+}
+
 func main() {
+	cfg, err := loadConfig()
+	if err != nil {
+		log.Fatalf("Failed to load config: %v", err)
+	}
+	appConfig = cfg
+
 	http.HandleFunc("/v1/verify", verifyHandler)
 
 	port := ":8080"
-	fmt.Printf("Apix Cloud Mock Server listening on %s...\n", port)
+	fmt.Printf("Apix Cloud Server listening on %s (mock_verify=%v)\n", port, appConfig.EnableMockVerify)
 	if err := http.ListenAndServe(port, nil); err != nil {
 		log.Fatal(err)
 	}

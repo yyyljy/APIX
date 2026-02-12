@@ -53,3 +53,31 @@ Based on `docs/003.pivot/plan.md`, this checklist outlines the concrete steps re
 - [ ] Write `README.md` for SDK quick start.
 - [ ] Create an example "Seller Server" (simple Express app using the Middleware).
 - [ ] Create an example "Buyer Script" (ethers.js script to pay and call API).
+
+## Phase 0: Protocol Parity Sprint (P0, 2 Weeks)
+*Goal: Close the minimum credibility gap vs. production x402 services before broader feature work.*
+
+- [ ] **Header Compatibility Layer (`PAYMENT-*`)**
+    - [ ] Backend returns `PAYMENT-REQUIRED` header in 402 responses in addition to current fields.
+    - [ ] Backend accepts `PAYMENT-SIGNATURE` flow while preserving current `Authorization: Apix ...` fallback.
+    - [ ] Define and document canonical header parsing/validation order.
+    - [ ] Add compatibility tests: legacy Apix header, mixed header, and standard header cases.
+- [ ] **Real On-Chain Verification (Single Chain MVP)**
+    - [ ] Replace "always valid" tx check in `apix-cloud/main.go` with real RPC verification.
+    - [ ] Validate recipient, amount, and confirmation depth against request metadata.
+    - [ ] Add timeout/retry policy for RPC failures and map to stable error codes.
+    - [ ] Add integration tests for success, underpayment, wrong recipient, and unconfirmed tx.
+- [ ] **Secret Management & Key Rotation Baseline**
+    - [ ] Move JWT secret from source code to environment variables.
+    - [ ] Add startup guard: fail fast when required secrets are missing.
+    - [ ] Implement key versioning field (`kid`) for future rotation.
+    - [ ] Document local/dev/prod secret provisioning.
+- [ ] **Protocol-Native Network Identity**
+    - [ ] Introduce CAIP-2-style network identifier in payment request metadata.
+    - [ ] Normalize chain config handling (network id, native token, decimals).
+    - [ ] Add validation to prevent network mismatch replay attempts.
+- [ ] **Definition of Done (P0 Exit Criteria)**
+    - [ ] 402 challenge is consumable by both current APIX client and PAYMENT-* compatible client.
+    - [ ] Mock verification path is removed from default runtime.
+    - [ ] Security review confirms no hardcoded signing secrets remain.
+    - [ ] Demo flow still passes end-to-end with backward compatibility enabled.

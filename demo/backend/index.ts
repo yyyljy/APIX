@@ -1,17 +1,74 @@
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import { ApixMiddleware } from 'apix-sdk-node';
+import crypto from 'crypto';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 const app = express();
 const port = 3000;
+const facilitatorUrl = process.env.APIX_FACILITATOR_URL || 'http://localhost:8080';
 
 app.use(cors());
 app.use(express.json());
 
 // Initialize Apix SDK
-const apix = new ApixMiddleware({
-    facilitatorUrl: 'http://localhost:8080'
-});
+const apixConfig: { facilitatorUrl: string; jwtSecret?: string } = {
+    facilitatorUrl
+};
+if (process.env.APIX_JWT_SECRET) {
+    apixConfig.jwtSecret = process.env.APIX_JWT_SECRET;
+}
+const apix = new ApixMiddleware(apixConfig);
+
+const PAYMENT_PROFILE = {
+    chainId: 43114,
+    network: 'eip155:43114',
+    currency: 'AVAX',
+    amount: '0.100000000000000000',
+    amountWei: '100000000000000000',
+    recipient: '0x71C7656EC7ab88b098defB751B7401B5f6d8976F',
+    minConfirmations: 1
+};
+
+const parsePaymentSignature = (value: string): string => {
+    const raw = value.trim();
+    if (!raw) return '';
+    if (raw.startsWith('0x')) return raw;
+
+    const txHashMatch = raw.match(/tx_hash=([0-9a-zA-Zx]+)/i);
+    if (txHashMatch?.[1]) return txHashMatch[1];
+
+    try {
+        const parsed = JSON.parse(raw);
+        if (typeof parsed?.txHash === 'string') return parsed.txHash;
+        if (typeof parsed?.tx_hash === 'string') return parsed.tx_hash;
+    } catch (_err) {
+        // Keep parsing fallbacks only.
+    }
+    return '';
+};
+
+const extractPaymentProof = (req: Request): string => {
+    const authHeader = req.headers['authorization'];
+    if (authHeader && authHeader.startsWith('Apix ')) {
+        const token = authHeader.split(' ')[1];
+        if (token) return token.trim();
+    }
+
+    const paymentSignature = req.headers['payment-signature'];
+    if (typeof paymentSignature === 'string') {
+        return parsePaymentSignature(paymentSignature);
+    }
+    if (Array.isArray(paymentSignature) && paymentSignature.length > 0) {
+        const firstValue = paymentSignature[0];
+        if (typeof firstValue === 'string') {
+            return parsePaymentSignature(firstValue);
+        }
+    }
+    return '';
+};
 
 // --- CORE BUSINESS LOGIC ---
 const getPremiumData = () => {
@@ -46,24 +103,20 @@ const stripeMiddleware = (req: Request, res: Response, next: NextFunction) => {
 
 // Apix Middleware Wrapper
 const apixMiddlewareWrapper = async (req: Request, res: Response, next: NextFunction) => {
-    const authHeader = req.headers['authorization'];
-
-    // Parse Authorization: Apix <token>
-    let token = '';
-    if (authHeader && authHeader.startsWith('Apix ')) {
-        token = authHeader.split(' ')[1];
-    }
+    const token = extractPaymentProof(req);
+    const paymentDetails = {
+        requestId: `req_${crypto.randomUUID()}`,
+        chainId: PAYMENT_PROFILE.chainId,
+        network: PAYMENT_PROFILE.network,
+        currency: PAYMENT_PROFILE.currency,
+        amount: PAYMENT_PROFILE.amount,
+        amountWei: PAYMENT_PROFILE.amountWei,
+        recipient: PAYMENT_PROFILE.recipient,
+        minConfirmations: PAYMENT_PROFILE.minConfirmations
+    };
 
     if (!token) {
         // Standard x402/L402 Pattern: Return WWW-Authenticate header
-        const paymentDetails = {
-            requestId: "req_550e8400-e29b",
-            chainId: 43114,
-            currency: "AVAX",
-            amount: "0.100000000000000000",
-            recipient: "0x71C7656EC7ab88b098defB751B7401B5f6d8976F"
-        };
-
         const paymentResponse = apix.createPaymentRequest(paymentDetails);
 
         res.set(paymentResponse.headers);
@@ -77,7 +130,7 @@ const apixMiddlewareWrapper = async (req: Request, res: Response, next: NextFunc
     // Otherwise treat as JWT (Session Validation)
     if (token.startsWith('0x') && token.length < 100) {
         console.log(`Apix Middleware: Verifying hash ${token}`);
-        const result = await apix.verifyPayment(token);
+        const result = await apix.verifyPayment(token, paymentDetails);
 
         if (!result.success || !result.token) {
             res.status(403).json({

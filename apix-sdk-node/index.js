@@ -39,35 +39,40 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.ApixMiddleware = void 0;
 const axios_1 = __importDefault(require("axios"));
 const jwt = __importStar(require("jsonwebtoken"));
-const JWT_SECRET = "apix-mvp-secret-key"; // Shared secret for MVP
 class ApixMiddleware {
     constructor(config = {}) {
         this.config = config;
         this.facilitatorUrl = config.facilitatorUrl || 'http://localhost:8080';
+        this.jwtSecret = config.jwtSecret || process.env.APIX_JWT_SECRET || '';
+        if (!this.jwtSecret) {
+            throw new Error('Missing APIX_JWT_SECRET (or provide jwtSecret in ApixMiddleware config).');
+        }
         this.sessionCache = new Map();
     }
     /**
      * Verifies a payment transaction hash with Apix Cloud.
      * @param txHash The transaction hash from the client.
      */
-    async verifyPayment(txHash) {
+    async verifyPayment(txHash, payment) {
         if (!txHash) {
             return { success: false, message: 'Transaction hash is missing.' };
         }
-        // 1. Check Local Cache first (if txHash is used as key, but here we use token as key usually)
-        // However, initial request only has txHash. 
-        // We could cache verified txHash -> token mapping if we wanted, but for MVP we rely on client sending token after first verify?
-        // Plan says: "SDK uses in-memory caching (Redis/Map) to validate the JWT for subsequent calls"
-        // So verifyPayment is for the INITIAL entry.
         try {
             const response = await axios_1.default.post(`${this.facilitatorUrl}/v1/verify`, {
-                tx_hash: txHash
+                tx_hash: txHash,
+                request_id: payment?.requestId,
+                chain_id: payment?.chainId,
+                network: payment?.network,
+                recipient: payment?.recipient,
+                amount_wei: payment?.amountWei,
+                currency: payment?.currency,
+                min_confirmations: payment?.minConfirmations
             });
             if (response.data && response.data.valid && response.data.token) {
                 const token = response.data.token;
                 // Decode and Cache
                 try {
-                    const decoded = jwt.verify(token, JWT_SECRET);
+                    const decoded = jwt.verify(token, this.jwtSecret);
                     this.sessionCache.set(token, {
                         claims: decoded,
                         remainingQuota: decoded.max_requests || 10,
@@ -163,10 +168,24 @@ class ApixMiddleware {
      * @param details The payment details required from the client.
      */
     createPaymentRequest(details) {
+        const paymentRequired = {
+            version: 'x402-draft',
+            request_id: details.requestId,
+            chain_id: details.chainId,
+            network: details.network,
+            payment_info: {
+                currency: details.currency,
+                amount: details.amount,
+                amount_wei: details.amountWei,
+                recipient: details.recipient
+            }
+        };
+        const paymentRequiredBase64 = Buffer.from(JSON.stringify(paymentRequired), 'utf8').toString('base64');
         const authHeader = `Apix realm="Apix Protected", request_id="${details.requestId}", price="${details.amount}", currency="${details.currency}", pay_to="${details.recipient}"`;
         return {
             headers: {
-                'WWW-Authenticate': authHeader
+                'WWW-Authenticate': authHeader,
+                'PAYMENT-REQUIRED': paymentRequiredBase64
             },
             body: {
                 error: "Payment Required",
@@ -174,9 +193,11 @@ class ApixMiddleware {
                 details: {
                     request_id: details.requestId,
                     chain_id: details.chainId,
+                    network: details.network,
                     payment_info: {
                         currency: details.currency,
                         amount: details.amount,
+                        amount_wei: details.amountWei,
                         recipient: details.recipient
                     }
                 }
