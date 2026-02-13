@@ -1,12 +1,33 @@
+export interface SessionData {
+    claims: any;
+    remainingQuota: number;
+    requestState: 'idle' | 'pending';
+}
+export interface SessionStore {
+    get(token: string): SessionData | undefined;
+    set(token: string, value: SessionData): void;
+    delete(token: string): void;
+}
+export declare class InMemorySessionStore implements SessionStore {
+    private cache;
+    constructor();
+    get(token: string): SessionData | undefined;
+    set(token: string, value: SessionData): void;
+    delete(token: string): void;
+}
 export interface ApixConfig {
     apiKey?: string;
     facilitatorUrl?: string;
     jwtSecret?: string;
+    sessionStore?: SessionStore;
 }
 export interface VerificationResult {
     success: boolean;
     token?: string;
     message?: string;
+    code?: string;
+    retryable?: boolean;
+    requestId?: string;
 }
 export interface PaymentDetails {
     requestId: string;
@@ -42,7 +63,7 @@ export interface PaymentResponse {
 export declare class ApixMiddleware {
     private config;
     private facilitatorUrl;
-    private sessionCache;
+    private sessionStore;
     private jwtSecret;
     constructor(config?: ApixConfig);
     /**
@@ -56,18 +77,15 @@ export declare class ApixMiddleware {
      */
     validateSession(token: string): boolean;
     /**
-     * Starts a request: marks simple "pending" state or just check quota.
-     * For MVP Atomic Deduction: we assume optimistic, deduct on success?
-     * Or deduct on start (PENDING), and verify success to keep it deducted, or rollback on failure.
-     * Plan says: "Request Start: Mark session usage as PENDING."
+     * Starts a request and marks quota deduction as pending.
      */
     startRequest(token: string): boolean;
     /**
-     * Commits the deduction (request succeeded).
+     * Commits a pending deduction after successful request handling.
      */
     commitRequest(token: string): void;
     /**
-     * Rolls back the deduction (request failed).
+     * Rolls back a pending deduction when request handling fails.
      */
     rollbackRequest(token: string): void;
     /**

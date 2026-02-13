@@ -35,6 +35,9 @@ In short: **"Payment as API authentication"** for Web3-native usage, with a dire
   - Express demo server exposing two protected endpoints:
     - `/stripe-product` (traditional token auth flow)
     - `/apix-product` (x402-like payment challenge flow)
+  - Ops endpoints:
+    - `/health` (liveness/status)
+    - `/metrics` (in-memory request/error/latency stats)
   - Uses local `apix-sdk-node` package.
 
 - `demo/frontend/`
@@ -59,8 +62,23 @@ In short: **"Payment as API authentication"** for Web3-native usage, with a dire
 4. Client retries request with payment proof (`PAYMENT-SIGNATURE` and/or `Authorization: Apix <txHash>`).
 5. SDK asks Apix Cloud to verify tx hash.
 6. Cloud returns signed JWT session token.
-7. SDK caches session, validates expiry/quota, and applies atomic deduction logic.
-8. Protected resource is returned with proof token.
+7. Cloud enforces idempotency (`request_id + tx_hash`) and replay protection for reused tx hash.
+8. SDK caches session, validates expiry/quota, and applies atomic deduction logic.
+9. Protected resource is returned with proof token.
+
+## Error Envelope
+
+Cloud and backend error responses expose shared machine-readable fields:
+
+- `code`
+- `message`
+- `retryable`
+- `request_id`
+
+Backend responses additionally include an `error` summary string for UI-friendly handling.
+
+Use `X-Request-ID` to correlate logs between client, backend, and cloud during troubleshooting.
+Cloud and backend emit structured JSON logs with `request_id`, `status`, `code`, `outcome`, and `latency_ms`.
 
 ## Why This Matters
 
@@ -92,8 +110,10 @@ This starts:
 1. Cloud
 ```bash
 cd apix-cloud
+# optional: copy .env.example to .env and edit values
 set APIX_JWT_SECRET=change-this-secret
 set APIX_ENABLE_MOCK_VERIFY=true
+set APIX_ALLOWED_ORIGINS=http://localhost:5173
 go run main.go
 ```
 
@@ -107,7 +127,9 @@ npm run build
 3. Backend
 ```bash
 cd demo/backend
+# optional: copy .env.example to .env and edit values
 set APIX_JWT_SECRET=change-this-secret
+set APIX_FACILITATOR_URL=http://localhost:8080
 npm install
 npm start
 ```
@@ -115,6 +137,8 @@ npm start
 4. Frontend
 ```bash
 cd demo/frontend
+# optional: copy .env.example to .env and edit values
+set VITE_API_BASE_URL=http://localhost:3000
 npm install
 npm run dev
 ```

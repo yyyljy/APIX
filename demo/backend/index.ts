@@ -9,6 +9,21 @@ dotenv.config();
 const app = express();
 const port = 3000;
 const facilitatorUrl = process.env.APIX_FACILITATOR_URL || 'http://localhost:8080';
+const startedAtMs = Date.now();
+
+type RouteMetric = {
+    count: number;
+    errorCount: number;
+    totalLatencyMs: number;
+    maxLatencyMs: number;
+};
+
+const metrics = {
+    totalRequests: 0,
+    totalErrors: 0,
+    statusCounts: new Map<string, number>(),
+    routeStats: new Map<string, RouteMetric>()
+};
 
 app.use(cors());
 app.use(express.json());
@@ -31,6 +46,111 @@ const PAYMENT_PROFILE = {
     recipient: '0x71C7656EC7ab88b098defB751B7401B5f6d8976F',
     minConfirmations: 1
 };
+
+const sendError = (
+    res: Response,
+    status: number,
+    code: string,
+    message: string,
+    options?: { retryable?: boolean; requestId?: string }
+) => {
+    res.status(status).json({
+        error: status >= 500 ? "Internal Error" : "Request Failed",
+        code,
+        message,
+        retryable: options?.retryable ?? false,
+        request_id: options?.requestId
+    });
+};
+
+const getOrCreateRequestId = (req: Request): string => {
+    const fromHeader = req.header('X-Request-ID');
+    if (fromHeader && fromHeader.trim()) return fromHeader.trim();
+    return `req_${crypto.randomUUID()}`;
+};
+
+const logEvent = (event: string, fields: Record<string, unknown>) => {
+    console.log(JSON.stringify({
+        ts: new Date().toISOString(),
+        event,
+        ...fields
+    }));
+};
+
+app.use((req: Request, res: Response, next: NextFunction) => {
+    const requestId = getOrCreateRequestId(req);
+    (req as any).requestId = requestId;
+    res.setHeader('X-Request-ID', requestId);
+    next();
+});
+
+app.use((req: Request, res: Response, next: NextFunction) => {
+    const startedAt = Date.now();
+    res.on('finish', () => {
+        const latencyMs = Date.now() - startedAt;
+        const statusKey = String(res.statusCode);
+        const routeKey = `${req.method} ${req.path}`;
+        const isError = res.statusCode >= 400;
+
+        metrics.totalRequests += 1;
+        if (isError) metrics.totalErrors += 1;
+        metrics.statusCounts.set(statusKey, (metrics.statusCounts.get(statusKey) || 0) + 1);
+
+        const existingRouteStats = metrics.routeStats.get(routeKey) || {
+            count: 0,
+            errorCount: 0,
+            totalLatencyMs: 0,
+            maxLatencyMs: 0
+        };
+        existingRouteStats.count += 1;
+        if (isError) existingRouteStats.errorCount += 1;
+        existingRouteStats.totalLatencyMs += latencyMs;
+        existingRouteStats.maxLatencyMs = Math.max(existingRouteStats.maxLatencyMs, latencyMs);
+        metrics.routeStats.set(routeKey, existingRouteStats);
+
+        logEvent("http.request_completed", {
+            request_id: (req as any).requestId,
+            method: req.method,
+            path: req.path,
+            status: res.statusCode,
+            latency_ms: latencyMs
+        });
+    });
+    next();
+});
+
+app.get('/health', (_req: Request, res: Response) => {
+    res.json({
+        status: "ok",
+        service: "demo-backend",
+        uptime_seconds: Math.floor((Date.now() - startedAtMs) / 1000),
+        timestamp: new Date().toISOString()
+    });
+});
+
+app.get('/metrics', (_req: Request, res: Response) => {
+    const routeMetrics = Array.from(metrics.routeStats.entries()).map(([route, values]) => ({
+        route,
+        count: values.count,
+        error_count: values.errorCount,
+        avg_latency_ms: values.count > 0 ? Math.round(values.totalLatencyMs / values.count) : 0,
+        max_latency_ms: values.maxLatencyMs
+    }));
+
+    res.json({
+        service: "demo-backend",
+        uptime_seconds: Math.floor((Date.now() - startedAtMs) / 1000),
+        totals: {
+            requests: metrics.totalRequests,
+            errors: metrics.totalErrors,
+            error_rate: metrics.totalRequests > 0
+                ? Number((metrics.totalErrors / metrics.totalRequests).toFixed(4))
+                : 0
+        },
+        status_counts: Object.fromEntries(metrics.statusCounts.entries()),
+        routes: routeMetrics
+    });
+});
 
 const parsePaymentSignature = (value: string): string => {
     const raw = value.trim();
@@ -89,10 +209,7 @@ const stripeMiddleware = (req: Request, res: Response, next: NextFunction) => {
 
     // Simulate typical Bearer token check
     if (!authHeader || !authHeader.startsWith('Bearer stripe_')) {
-        res.status(401).json({
-            error: "Unauthorized",
-            message: "Missing or invalid Stripe session token."
-        });
+        sendError(res, 401, "invalid_stripe_session", "Missing or invalid Stripe session token.", { requestId: (req as any).requestId });
         return;
     }
 
@@ -104,8 +221,9 @@ const stripeMiddleware = (req: Request, res: Response, next: NextFunction) => {
 // Apix Middleware Wrapper
 const apixMiddlewareWrapper = async (req: Request, res: Response, next: NextFunction) => {
     const token = extractPaymentProof(req);
+    const requestId = (req as any).requestId || getOrCreateRequestId(req);
     const paymentDetails = {
-        requestId: `req_${crypto.randomUUID()}`,
+        requestId,
         chainId: PAYMENT_PROFILE.chainId,
         network: PAYMENT_PROFILE.network,
         currency: PAYMENT_PROFILE.currency,
@@ -129,14 +247,17 @@ const apixMiddlewareWrapper = async (req: Request, res: Response, next: NextFunc
     // Heuristic: If token starts with 0x, treat as TxHash (Delegated Verification)
     // Otherwise treat as JWT (Session Validation)
     if (token.startsWith('0x') && token.length < 100) {
-        console.log(`Apix Middleware: Verifying hash ${token}`);
+        logEvent("apix.verify_started", { request_id: requestId, tx_hash: token });
         const result = await apix.verifyPayment(token, paymentDetails);
 
         if (!result.success || !result.token) {
-            res.status(403).json({
-                error: "Forbidden",
-                message: "Apix verification failed."
-            });
+            sendError(
+                res,
+                403,
+                result.code || "apix_verification_failed",
+                result.message || "Apix verification failed.",
+                { retryable: result.retryable ?? false, requestId: result.requestId || paymentDetails.requestId }
+            );
             return;
         }
         validToken = result.token;
@@ -145,33 +266,35 @@ const apixMiddlewareWrapper = async (req: Request, res: Response, next: NextFunc
         if (apix.validateSession(token)) {
             validToken = token;
         } else {
-            res.status(403).json({
-                error: "Forbidden",
-                message: "Invalid or expired Apix session."
-            });
+            sendError(res, 403, "invalid_apix_session", "Invalid or expired Apix session.", { requestId: paymentDetails.requestId });
             return;
         }
     }
 
     // Atomic Deduction Logic: Start Request
     if (!apix.startRequest(validToken)) {
-        res.status(402).json({
-            error: "Payment Required",
-            message: "Session quota exceeded."
-        });
+        sendError(res, 402, "session_quota_exceeded", "Session quota exceeded.", { requestId: paymentDetails.requestId });
         return;
     }
 
     // Hook into response finish to commit/rollback
-    res.on('finish', () => {
-        if (res.statusCode >= 200 && res.statusCode < 500) {
+    let quotaFinalized = false;
+    const finalizeQuota = () => {
+        if (quotaFinalized) return;
+        quotaFinalized = true;
+
+        if (res.statusCode >= 200 && res.statusCode < 300) {
             apix.commitRequest(validToken);
-            // console.log("Apix: Request Committed");
-        } else {
-            apix.rollbackRequest(validToken);
+            return;
+        }
+        apix.rollbackRequest(validToken);
+        if (res.statusCode >= 500) {
             console.log("Apix: Request Rolled Back (Quota Refunded)");
         }
-    });
+    };
+
+    res.on('finish', finalizeQuota);
+    res.on('close', finalizeQuota);
 
     // Inject proof (JWT) so controller can return it to client
     (req as any).apixProof = validToken;
@@ -182,6 +305,7 @@ const apixMiddlewareWrapper = async (req: Request, res: Response, next: NextFunc
 
 // 1. Stripe Endpoint
 app.get('/stripe-product', stripeMiddleware, (req: Request, res: Response) => {
+    logEvent("stripe.request", { request_id: (req as any).requestId, path: req.path });
     const data = getPremiumData();
     res.json({
         method: "Stripe",
@@ -191,6 +315,7 @@ app.get('/stripe-product', stripeMiddleware, (req: Request, res: Response) => {
 
 // 2. Apix Endpoint
 app.get('/apix-product', apixMiddlewareWrapper, (req: Request, res: Response) => {
+    logEvent("apix.request_success", { request_id: (req as any).requestId, path: req.path });
     const data = getPremiumData();
     res.json({
         method: "Apix",

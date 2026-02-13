@@ -20,6 +20,28 @@ export default function MainLayout({ children }) {
               </p>
             </div>
           </div>
+          <nav className="flex items-center gap-2 text-sm font-semibold">
+            <Link
+              to="/"
+              className={`rounded-md px-3 py-2 transition ${
+                location.pathname === "/"
+                  ? "bg-slate-900 text-white"
+                  : "text-slate-600 hover:bg-slate-100"
+              }`}
+            >
+              Demo
+            </Link>
+            <Link
+              to="/transactions"
+              className={`rounded-md px-3 py-2 transition ${
+                location.pathname === "/transactions"
+                  ? "bg-slate-900 text-white"
+                  : "text-slate-600 hover:bg-slate-100"
+              }`}
+            >
+              Transactions
+            </Link>
+          </nav>
         </div>
       </header>
 

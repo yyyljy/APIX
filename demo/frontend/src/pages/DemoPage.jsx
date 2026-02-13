@@ -1,32 +1,39 @@
-﻿import React, { useState } from "react";
+import React, { useState } from "react";
 import PaymentModal from "../components/PaymentModal";
-
-const parsePaymentRequired = (encodedHeader, bodyDetails) => {
-  if (bodyDetails) return bodyDetails;
-  if (!encodedHeader) return null;
-  try {
-    const decoded = atob(encodedHeader);
-    const parsed = JSON.parse(decoded);
-    return {
-      request_id: parsed.request_id,
-      chain_id: parsed.chain_id,
-      network: parsed.network,
-      payment_info: parsed.payment_info,
-    };
-  } catch (_err) {
-    return null;
-  }
-};
+import {
+  fetchProxyResource,
+  fetchStripeProduct,
+  verifyPayment,
+} from "../utils/api";
+import { createTransaction, updateTransaction } from "../utils/transactions";
 
 const DemoPage = () => {
   const [stripeResult, setStripeResult] = useState(null);
-  const [apixResult, setApixResult] = useState(null);
+  const [apixTrace, setApixTrace] = useState(null);
+  const [apixRaw, setApixRaw] = useState(null);
   const [showStripeModal, setShowStripeModal] = useState(false);
   const [isProcessingStripe, setIsProcessingStripe] = useState(false);
 
   const [showApixModal, setShowApixModal] = useState(false);
   const [isProcessingApix, setIsProcessingApix] = useState(false);
   const [paymentDetails, setPaymentDetails] = useState(null);
+  const [pendingApixTxnId, setPendingApixTxnId] = useState(null);
+
+  const summarizePayload = (payload, status) => {
+    if (!payload) return "No payload";
+    const lines = [];
+    if (typeof status === "number") lines.push(`status: ${status}`);
+    if (typeof payload.success === "boolean") lines.push(`success: ${payload.success}`);
+    if (payload?.error?.code) lines.push(`code: ${payload.error.code}`);
+    if (payload?.error?.request_id) lines.push(`request_id: ${payload.error.request_id}`);
+    if (payload?.raw?.proof || payload?.proof || payload?.data?.access_token) {
+      const token = payload?.raw?.proof || payload?.proof || payload?.data?.access_token;
+      lines.push(`proof: ${String(token).slice(0, 24)}...`);
+    }
+    if (payload?.raw?.method || payload?.method) lines.push(`method: ${payload?.raw?.method || payload?.method}`);
+    if (payload?.error?.message) lines.push(`message: ${payload.error.message}`);
+    return lines.join("\n") || "No summary fields";
+  };
 
   const handleStripeClick = () => {
     setShowStripeModal(true);
@@ -42,35 +49,44 @@ const DemoPage = () => {
 
   const callStripeApi = async () => {
     try {
-      const mockStripeToken = "Bearer stripe_session_abc123";
-      const res = await fetch("http://localhost:3000/stripe-product", {
-        headers: {
-          Authorization: mockStripeToken,
-        },
-      });
+      const res = await fetchStripeProduct();
       const data = await res.json();
-      setStripeResult(JSON.stringify(data, null, 2));
+      createTransaction({
+        rail: "stripe",
+        status: res.status >= 200 && res.status < 300 ? "success" : "failed",
+        requestId: data?.request_id || null,
+        message: data?.message || (res.status >= 200 && res.status < 300 ? "Stripe flow completed" : "Stripe flow failed"),
+        data: res.status >= 200 && res.status < 300 ? data : null,
+      });
+      setStripeResult({
+        summary: summarizePayload(data, res.status),
+        raw: data,
+      });
     } catch (err) {
-      setStripeResult("Error: " + err.message);
+      createTransaction({
+        rail: "stripe",
+        status: "failed",
+        message: err.message || "Stripe request failed",
+      });
+      setStripeResult({
+        summary: "Error: " + err.message,
+        raw: null,
+      });
     }
   };
 
   const initiateApixFlow = async () => {
     try {
-      setApixResult("1. Requesting protected resource...");
-      const res = await fetch("http://localhost:3000/apix-product");
+      setApixRaw(null);
+      setApixTrace("1. Requesting protected resource...");
+      const res = await fetchProxyResource("listing_001");
+      const payload = await res.json();
 
       if (res.status === 402) {
-        const errorData = await res.json();
-        const paymentRequiredHeader =
-          res.headers.get("PAYMENT-REQUIRED") ||
-          res.headers.get("payment-required");
-        const details = parsePaymentRequired(
-          paymentRequiredHeader,
-          errorData?.details,
-        );
+        const details = payload?.error?.details || payload?.details;
         if (!details) {
-          setApixResult("Payment challenge parse failed.");
+          setApixTrace("Payment challenge parse failed.");
+          setApixRaw(payload);
           return;
         }
 
@@ -83,8 +99,15 @@ const DemoPage = () => {
           chainId: details.chain_id,
           network: details.network,
         });
+        const pendingTx = createTransaction({
+          rail: "apix",
+          status: "pending",
+          requestId: details.request_id,
+          message: "Payment challenge received",
+        });
+        setPendingApixTxnId(pendingTx.id);
 
-        setApixResult(
+        setApixTrace(
           `2. Received 402 Payment Required\n` +
             `Amount: ${details.payment_info.amount} ${details.payment_info.currency}\n` +
             `Recipient: ${details.payment_info.recipient}\n\n` +
@@ -93,11 +116,12 @@ const DemoPage = () => {
 
         setShowApixModal(true);
       } else {
-        const data = await res.json();
-        setApixResult(JSON.stringify(data, null, 2));
+        setApixTrace("Completed without payment challenge.");
+        setApixRaw(payload);
       }
     } catch (err) {
-      setApixResult("Error: " + err.message);
+      setApixTrace("Error: " + err.message);
+      setApixRaw(null);
     }
   };
 
@@ -114,26 +138,67 @@ const DemoPage = () => {
         .map(() => Math.floor(Math.random() * 16).toString(16))
         .join("");
 
-    setApixResult(
+    setApixTrace(
       (prev) =>
         `${prev}\n\n4. Payment sent\nTxHash: ${mockTxHash}\n5. Verifying...`,
     );
 
     try {
-      const res = await fetch("http://localhost:3000/apix-product", {
-        headers: {
-          "PAYMENT-SIGNATURE": `tx_hash=${mockTxHash}`,
-          Authorization: `Apix ${mockTxHash}`,
-        },
-      });
+      const verifyRes = await verifyPayment(paymentDetails.requestId, mockTxHash);
+      const verifyData = await verifyRes.json();
+      if (!verifyData?.success || !verifyData?.data?.access_token) {
+        if (pendingApixTxnId) {
+          updateTransaction(pendingApixTxnId, {
+            status: "failed",
+            txHash: mockTxHash,
+            requestId: paymentDetails.requestId,
+            message: verifyData?.error?.message || "Verification failed",
+          });
+        }
+        setApixRaw(verifyData);
+        setApixTrace(
+          (prev) =>
+            `${prev}\n\nVerification failed: ${verifyData?.error?.message || "Unknown error"}`,
+        );
+        setIsProcessingApix(false);
+        return;
+      }
 
-      const data = await res.json();
+      const dataRes = await fetchProxyResource("listing_001", verifyData.data.access_token);
+      const data = await dataRes.json();
+      if (pendingApixTxnId) {
+        updateTransaction(pendingApixTxnId, {
+          status: dataRes.status >= 200 && dataRes.status < 300 ? "success" : "failed",
+          txHash: mockTxHash,
+          requestId: paymentDetails.requestId,
+          message: dataRes.status >= 200 && dataRes.status < 300
+            ? "Payment and data access completed"
+            : "Data access failed after verification",
+          data: dataRes.status >= 200 && dataRes.status < 300 ? data : null,
+        });
+      }
+
       setShowApixModal(false);
       setIsProcessingApix(false);
-      setApixResult(JSON.stringify(data, null, 2));
+      setPendingApixTxnId(null);
+      setApixRaw({
+        verify: verifyData,
+        access: data,
+      });
+      setApixTrace((prev) => `${prev}\n\n6. Access granted.`);
     } catch (err) {
-      setApixResult((prev) => `${prev}\n\nVerification failed: ${err.message}`);
+      if (pendingApixTxnId) {
+        updateTransaction(pendingApixTxnId, {
+          status: "failed",
+          txHash: mockTxHash,
+          requestId: paymentDetails?.requestId || null,
+          message: err.message || "Verification failed",
+        });
+      }
+      setApixTrace((prev) => `${prev}\n\nVerification failed: ${err.message}`);
+      setApixRaw(null);
       setIsProcessingApix(false);
+      setPendingApixTxnId(null);
     }
   };
 
@@ -269,10 +334,18 @@ const DemoPage = () => {
 
           <div className="mt-5">
             <p className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">
-              API Response
+              Summary
             </p>
             <pre className="response-box">
-              {stripeResult || "Waiting for transaction..."}
+              {stripeResult?.summary || "Waiting for transaction..."}
+            </pre>
+            <p className="mb-2 mt-3 text-xs font-bold uppercase tracking-wide text-slate-500">
+              Raw Payload
+            </p>
+            <pre className="response-box">
+              {stripeResult?.raw
+                ? JSON.stringify(stripeResult.raw, null, 2)
+                : "Raw payload will appear here."}
             </pre>
           </div>
         </article>
@@ -305,10 +378,16 @@ const DemoPage = () => {
 
           <div className="mt-5">
             <p className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">
-              API Response
+              Flow Trace
             </p>
             <pre className="response-box">
-              {apixResult || "Waiting for transaction..."}
+              {apixTrace || "Waiting for transaction..."}
+            </pre>
+            <p className="mb-2 mt-3 text-xs font-bold uppercase tracking-wide text-slate-500">
+              Raw Payload
+            </p>
+            <pre className="response-box">
+              {apixRaw ? JSON.stringify(apixRaw, null, 2) : "Raw payload will appear here."}
             </pre>
           </div>
         </article>
@@ -318,3 +397,5 @@ const DemoPage = () => {
 };
 
 export default DemoPage;
+
+

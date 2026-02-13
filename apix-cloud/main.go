@@ -12,6 +12,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -27,9 +29,28 @@ type Config struct {
 	RPCMaxRetries           int
 	EnableMockVerify        bool
 	DefaultMinConfirmations uint64
+	AllowAnyOrigin          bool
+	AllowedOrigins          map[string]struct{}
 }
 
 var appConfig Config
+var requestCounter uint64
+
+type verificationRecord struct {
+	Token     string
+	ExpiresAt time.Time
+	RequestID string
+	TxHash    string
+}
+
+var verificationStore = struct {
+	mu       sync.RWMutex
+	byPair   map[string]verificationRecord
+	byTxHash map[string]string
+}{
+	byPair:   map[string]verificationRecord{},
+	byTxHash: map[string]string{},
+}
 
 // Request payload for verification
 type VerifyRequest struct {
@@ -45,10 +66,12 @@ type VerifyRequest struct {
 
 // Response payload
 type VerifyResponse struct {
-	Valid   bool   `json:"valid"`
-	Message string `json:"message"`
-	Token   string `json:"token,omitempty"`
-	Code    string `json:"code,omitempty"`
+	Valid     bool   `json:"valid"`
+	Message   string `json:"message"`
+	Token     string `json:"token,omitempty"`
+	Code      string `json:"code,omitempty"`
+	Retryable bool   `json:"retryable"`
+	RequestID string `json:"request_id,omitempty"`
 }
 
 // Claims structure
@@ -96,10 +119,173 @@ type ethTransactionReceipt struct {
 	Status          string `json:"status"`
 }
 
-func verifyHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+func applyCORSHeaders(w http.ResponseWriter, r *http.Request, cfg Config) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		if cfg.AllowAnyOrigin {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+		}
+		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, PAYMENT-SIGNATURE")
+		return true
+	}
+
+	if cfg.AllowAnyOrigin {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, PAYMENT-SIGNATURE")
+		return true
+	}
+
+	if _, ok := cfg.AllowedOrigins[origin]; !ok {
+		return false
+	}
+
+	w.Header().Set("Access-Control-Allow-Origin", origin)
+	w.Header().Set("Vary", "Origin")
 	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, PAYMENT-SIGNATURE")
+	return true
+}
+
+func ensureRequestID(r *http.Request, req *VerifyRequest) string {
+	requestID := strings.TrimSpace(req.RequestID)
+	if requestID == "" {
+		requestID = getOrGenerateRequestID(strings.TrimSpace(r.Header.Get("X-Request-ID")))
+	}
+	req.RequestID = requestID
+	return requestID
+}
+
+func getOrGenerateRequestID(requestID string) string {
+	requestID = strings.TrimSpace(requestID)
+	if requestID != "" {
+		return requestID
+	}
+	next := atomic.AddUint64(&requestCounter, 1)
+	return fmt.Sprintf("req_%d_%d", time.Now().UnixMilli(), next)
+}
+
+func logEvent(level, event string, fields map[string]interface{}) {
+	payload := map[string]interface{}{
+		"ts":    time.Now().UTC().Format(time.RFC3339Nano),
+		"level": level,
+		"event": event,
+	}
+	for k, v := range fields {
+		payload[k] = v
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("event=%s level=%s marshal_error=%v", event, level, err)
+		return
+	}
+	log.Print(string(encoded))
+}
+
+func pairKey(requestID, txHash string) string {
+	return fmt.Sprintf("%s|%s", strings.TrimSpace(requestID), strings.ToLower(strings.TrimSpace(txHash)))
+}
+
+func getVerificationRecord(requestID, txHash string) (verificationRecord, bool) {
+	now := time.Now()
+	key := pairKey(requestID, txHash)
+
+	verificationStore.mu.RLock()
+	record, ok := verificationStore.byPair[key]
+	verificationStore.mu.RUnlock()
+	if !ok {
+		return verificationRecord{}, false
+	}
+	if now.After(record.ExpiresAt) {
+		removeVerificationRecord(record.RequestID, record.TxHash)
+		return verificationRecord{}, false
+	}
+	return record, true
+}
+
+func getTxHashOwner(txHash string) (string, bool) {
+	now := time.Now()
+	normalizedTxHash := strings.ToLower(strings.TrimSpace(txHash))
+
+	verificationStore.mu.RLock()
+	requestID, ok := verificationStore.byTxHash[normalizedTxHash]
+	verificationStore.mu.RUnlock()
+	if !ok {
+		return "", false
+	}
+
+	record, found := getVerificationRecord(requestID, normalizedTxHash)
+	if !found || now.After(record.ExpiresAt) {
+		removeVerificationRecord(requestID, normalizedTxHash)
+		return "", false
+	}
+	return requestID, true
+}
+
+func saveVerificationRecord(requestID, txHash, token string, expiresAt time.Time) {
+	record := verificationRecord{
+		Token:     token,
+		ExpiresAt: expiresAt,
+		RequestID: strings.TrimSpace(requestID),
+		TxHash:    strings.ToLower(strings.TrimSpace(txHash)),
+	}
+	key := pairKey(record.RequestID, record.TxHash)
+
+	verificationStore.mu.Lock()
+	verificationStore.byPair[key] = record
+	verificationStore.byTxHash[record.TxHash] = record.RequestID
+	verificationStore.mu.Unlock()
+}
+
+func removeVerificationRecord(requestID, txHash string) {
+	normalizedTxHash := strings.ToLower(strings.TrimSpace(txHash))
+	key := pairKey(requestID, normalizedTxHash)
+
+	verificationStore.mu.Lock()
+	delete(verificationStore.byPair, key)
+	delete(verificationStore.byTxHash, normalizedTxHash)
+	verificationStore.mu.Unlock()
+}
+
+func cleanupExpiredVerificationRecords(now time.Time) int {
+	removed := 0
+	verificationStore.mu.Lock()
+	for key, record := range verificationStore.byPair {
+		if now.After(record.ExpiresAt) {
+			delete(verificationStore.byPair, key)
+			delete(verificationStore.byTxHash, record.TxHash)
+			removed++
+		}
+	}
+	verificationStore.mu.Unlock()
+	return removed
+}
+
+func verifyHandler(w http.ResponseWriter, r *http.Request) {
+	startedAt := time.Now()
+	requestID := getOrGenerateRequestID(strings.TrimSpace(r.Header.Get("X-Request-ID")))
+	responseCode := "ok"
+	statusCode := http.StatusOK
+	outcome := "success"
+	w.Header().Set("X-Request-ID", requestID)
+	defer func() {
+		logEvent("info", "verify.request_completed", map[string]interface{}{
+			"request_id": requestID,
+			"status":     statusCode,
+			"code":       responseCode,
+			"outcome":    outcome,
+			"latency_ms": time.Since(startedAt).Milliseconds(),
+		})
+	}()
+
+	if !applyCORSHeaders(w, r, appConfig) {
+		outcome = "error"
+		statusCode = http.StatusForbidden
+		responseCode = "cors_origin_not_allowed"
+		writeError(w, http.StatusForbidden, "cors_origin_not_allowed", "Origin is not allowed", false, "")
+		return
+	}
 
 	if r.Method == "OPTIONS" {
 		w.WriteHeader(http.StatusOK)
@@ -107,29 +293,77 @@ func verifyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method != "POST" {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		outcome = "error"
+		statusCode = http.StatusMethodNotAllowed
+		responseCode = "method_not_allowed"
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", false, "")
 		return
 	}
 
 	var req VerifyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request_body", "Invalid request body")
+		outcome = "error"
+		statusCode = http.StatusBadRequest
+		responseCode = "invalid_request_body"
+		writeError(w, http.StatusBadRequest, "invalid_request_body", "Invalid request body", false, "")
 		return
 	}
+	requestID = ensureRequestID(r, &req)
+	w.Header().Set("X-Request-ID", requestID)
 
 	if req.MinConfirmations == 0 {
 		req.MinConfirmations = appConfig.DefaultMinConfirmations
 	}
 	if err := validateVerifyRequest(req, appConfig.EnableMockVerify); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		outcome = "error"
+		statusCode = http.StatusBadRequest
+		responseCode = "invalid_request"
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error(), false, req.RequestID)
 		return
 	}
 
-	log.Printf("Verification request received tx_hash=%s network=%s request_id=%s", req.TxHash, req.Network, req.RequestID)
+	logEvent("info", "verify.request_received", map[string]interface{}{
+		"request_id": requestID,
+		"tx_hash":    req.TxHash,
+		"network":    req.Network,
+		"chain_id":   req.ChainID,
+	})
+
+	if existingRecord, ok := getVerificationRecord(req.RequestID, req.TxHash); ok {
+		logEvent("info", "verify.idempotent_hit", map[string]interface{}{
+			"request_id": requestID,
+			"tx_hash":    req.TxHash,
+		})
+		resp := VerifyResponse{
+			Valid:     true,
+			Message:   "Verification already processed",
+			Token:     existingRecord.Token,
+			RequestID: requestID,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+		return
+	}
+
+	if ownerRequestID, exists := getTxHashOwner(req.TxHash); exists && ownerRequestID != req.RequestID {
+		outcome = "error"
+		statusCode = http.StatusForbidden
+		responseCode = "tx_hash_already_used"
+		writeError(w, http.StatusForbidden, "tx_hash_already_used", "Transaction hash already used by another request", false, requestID)
+		return
+	}
 
 	if !appConfig.EnableMockVerify {
 		if err := verifyOnChain(req, appConfig); err != nil {
-			writeError(w, http.StatusForbidden, "verification_failed", err.Error())
+			logEvent("warn", "verify.verification_failed", map[string]interface{}{
+				"request_id": requestID,
+				"tx_hash":    req.TxHash,
+				"error":      err.Error(),
+			})
+			outcome = "error"
+			statusCode = http.StatusForbidden
+			responseCode = "verification_failed"
+			writeError(w, http.StatusForbidden, "verification_failed", err.Error(), isRetryableVerificationError(err), req.RequestID)
 			return
 		}
 	}
@@ -154,19 +388,32 @@ func verifyHandler(w http.ResponseWriter, r *http.Request) {
 	token.Header["kid"] = appConfig.JWTKeyID
 	tokenString, err := token.SignedString(appConfig.JWTSecret)
 	if err != nil {
-		log.Printf("Error signing token: %v", err)
-		writeError(w, http.StatusInternalServerError, "signing_error", "Internal server error")
+		logEvent("error", "verify.signing_failed", map[string]interface{}{
+			"request_id": requestID,
+			"error":      err.Error(),
+		})
+		outcome = "error"
+		statusCode = http.StatusInternalServerError
+		responseCode = "signing_error"
+		writeError(w, http.StatusInternalServerError, "signing_error", "Internal server error", true, req.RequestID)
 		return
 	}
+	saveVerificationRecord(req.RequestID, req.TxHash, tokenString, claims.ExpiresAt.Time)
 
 	resp := VerifyResponse{
-		Valid:   true,
-		Message: "Verification successful",
-		Token:   tokenString,
+		Valid:     true,
+		Message:   "Verification successful",
+		Token:     tokenString,
+		RequestID: req.RequestID,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+	logEvent("info", "verify.success", map[string]interface{}{
+		"request_id": requestID,
+		"tx_hash":    req.TxHash,
+		"expires_at": claims.ExpiresAt.Time.UTC().Format(time.RFC3339),
+	})
 }
 
 func loadConfig() (Config, error) {
@@ -225,6 +472,27 @@ func loadConfig() (Config, error) {
 		minConf = v
 	}
 
+	allowAnyOrigin := true
+	allowedOrigins := map[string]struct{}{}
+	if raw := strings.TrimSpace(os.Getenv("APIX_ALLOWED_ORIGINS")); raw != "" {
+		allowAnyOrigin = false
+		for _, item := range strings.Split(raw, ",") {
+			origin := strings.TrimSpace(item)
+			if origin == "" {
+				continue
+			}
+			if origin == "*" {
+				allowAnyOrigin = true
+				allowedOrigins = map[string]struct{}{}
+				break
+			}
+			allowedOrigins[origin] = struct{}{}
+		}
+		if !allowAnyOrigin && len(allowedOrigins) == 0 {
+			return Config{}, errors.New("invalid APIX_ALLOWED_ORIGINS: expected comma-separated origins or '*'")
+		}
+	}
+
 	return Config{
 		JWTSecret:               []byte(secret),
 		JWTIssuer:               issuer,
@@ -235,6 +503,8 @@ func loadConfig() (Config, error) {
 		RPCMaxRetries:           rpcMaxRetries,
 		EnableMockVerify:        enableMockVerify,
 		DefaultMinConfirmations: minConf,
+		AllowAnyOrigin:          allowAnyOrigin,
+		AllowedOrigins:          allowedOrigins,
 	}, nil
 }
 
@@ -392,12 +662,6 @@ func rpcCall(rpcURL, method string, params interface{}, out interface{}) error {
 		return err
 	}
 
-	req, err := http.NewRequest(http.MethodPost, rpcURL, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
 	timeout := appConfig.RPCTimeout
 	if timeout <= 0 {
 		timeout = 8 * time.Second
@@ -408,8 +672,14 @@ func rpcCall(rpcURL, method string, params interface{}, out interface{}) error {
 	}
 
 	var lastErr error
+	client := &http.Client{Timeout: timeout}
 	for attempt := 1; attempt <= attempts; attempt++ {
-		client := &http.Client{Timeout: timeout}
+		req, err := http.NewRequest(http.MethodPost, rpcURL, bytes.NewReader(body))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", "application/json")
+
 		resp, err := client.Do(req)
 		if err != nil {
 			lastErr = err
@@ -443,13 +713,39 @@ func rpcCall(rpcURL, method string, params interface{}, out interface{}) error {
 	return lastErr
 }
 
-func writeError(w http.ResponseWriter, status int, code, message string) {
+func isRetryableVerificationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	retryablePatterns := []string{
+		"failed to get transaction",
+		"failed to get receipt",
+		"failed to get chain id from rpc",
+		"failed to get latest block number",
+		"rpc http error",
+		"rpc error",
+	}
+	for _, pattern := range retryablePatterns {
+		if strings.Contains(message, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+func writeError(w http.ResponseWriter, status int, code, message string, retryable bool, requestID string) {
 	w.Header().Set("Content-Type", "application/json")
+	if strings.TrimSpace(requestID) != "" {
+		w.Header().Set("X-Request-ID", requestID)
+	}
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(VerifyResponse{
-		Valid:   false,
-		Code:    code,
-		Message: message,
+		Valid:     false,
+		Code:      code,
+		Message:   message,
+		Retryable: retryable,
+		RequestID: requestID,
 	})
 }
 
@@ -459,6 +755,19 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 	appConfig = cfg
+
+	go func() {
+		ticker := time.NewTicker(1 * time.Minute)
+		defer ticker.Stop()
+		for now := range ticker.C {
+			removed := cleanupExpiredVerificationRecords(now)
+			if removed > 0 {
+				logEvent("info", "verify.cleanup_expired_records", map[string]interface{}{
+					"removed": removed,
+				})
+			}
+		}
+	}()
 
 	http.HandleFunc("/v1/verify", verifyHandler)
 

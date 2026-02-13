@@ -62,7 +62,8 @@ export default function Overview() {
 
         try {
             const { request_id, payment_info } = details;
-            addLog(`Initializing Payment: ${ethers.formatEther(payment_info.amount)} AVAX`, "info");
+            const amountWei = payment_info.amount_wei || payment_info.amount;
+            addLog(`Initializing Payment: ${ethers.formatEther(amountWei)} AVAX`, "info");
 
             // 2. Send Transaction
             const provider = new ethers.BrowserProvider(window.ethereum);
@@ -70,7 +71,7 @@ export default function Overview() {
 
             const tx = {
                 to: payment_info.recipient,
-                value: payment_info.amount,
+                value: amountWei,
             };
 
             const txResponse = await signer.sendTransaction(tx);

@@ -14,6 +14,8 @@ def run_demo():
     env.setdefault("APIX_JWT_KID", "dev-v1")
     env.setdefault("APIX_ENABLE_MOCK_VERIFY", "true")
     env.setdefault("APIX_MIN_CONFIRMATIONS", "1")
+    env.setdefault("APIX_ALLOWED_ORIGINS", "http://localhost:5173")
+    env.setdefault("VITE_API_BASE_URL", "http://localhost:3000")
 
     try:
         print("Starting Apix Cloud (Go)...")
