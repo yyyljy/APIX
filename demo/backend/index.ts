@@ -10,6 +10,20 @@ const app = express();
 const port = 3000;
 const facilitatorUrl = process.env.APIX_FACILITATOR_URL || 'http://localhost:8080';
 const startedAtMs = Date.now();
+let metricsToken = (process.env.APIX_METRICS_TOKEN || '').trim();
+const allowedOriginsRaw = process.env.APIX_ALLOWED_ORIGINS || 'http://localhost:5173,http://127.0.0.1:5173';
+const allowAnyOrigin = allowedOriginsRaw.split(',').map((value) => value.trim()).includes('*');
+const allowedOrigins = new Set(
+    allowedOriginsRaw
+        .split(',')
+        .map((value) => value.trim())
+        .filter((value) => value && value !== '*')
+);
+
+if (!metricsToken || metricsToken.toLowerCase() === 'change-this-token') {
+    metricsToken = crypto.randomBytes(24).toString('hex');
+    console.warn('APIX_METRICS_TOKEN was missing or placeholder. Generated an ephemeral token for this process.');
+}
 
 type RouteMetric = {
     count: number;
@@ -25,15 +39,34 @@ const metrics = {
     routeStats: new Map<string, RouteMetric>()
 };
 
-app.use(cors());
+app.use(cors({
+    origin: (origin, callback) => {
+        if (!origin || allowAnyOrigin || allowedOrigins.has(origin)) {
+            callback(null, true);
+            return;
+        }
+        callback(new Error('Origin not allowed by CORS policy'));
+    }
+}));
 app.use(express.json());
 
 // Initialize Apix SDK
-const apixConfig: { facilitatorUrl: string; jwtSecret?: string } = {
+const apixConfig: {
+    facilitatorUrl: string;
+    jwtSecret?: string;
+    sessionAuthorityUrl?: string;
+    useCloudSessionState?: boolean;
+} = {
     facilitatorUrl
 };
 if (process.env.APIX_JWT_SECRET) {
     apixConfig.jwtSecret = process.env.APIX_JWT_SECRET;
+}
+if (process.env.APIX_SESSION_AUTHORITY_URL) {
+    apixConfig.sessionAuthorityUrl = process.env.APIX_SESSION_AUTHORITY_URL;
+}
+if (typeof process.env.APIX_USE_CLOUD_SESSION_STATE === 'string') {
+    apixConfig.useCloudSessionState = process.env.APIX_USE_CLOUD_SESSION_STATE.trim().toLowerCase() === 'true';
 }
 const apix = new ApixMiddleware(apixConfig);
 
@@ -129,6 +162,12 @@ app.get('/health', (_req: Request, res: Response) => {
 });
 
 app.get('/metrics', (_req: Request, res: Response) => {
+    const authHeader = String(_req.headers['authorization'] || '');
+    if (authHeader !== `Bearer ${metricsToken}`) {
+        sendError(res, 401, "metrics_unauthorized", "Metrics endpoint requires a valid bearer token.");
+        return;
+    }
+
     const routeMetrics = Array.from(metrics.routeStats.entries()).map(([route, values]) => ({
         route,
         count: values.count,
@@ -263,7 +302,7 @@ const apixMiddlewareWrapper = async (req: Request, res: Response, next: NextFunc
         validToken = result.token;
     } else {
         // JWT Validation
-        if (apix.validateSession(token)) {
+        if (await apix.validateSessionState(token)) {
             validToken = token;
         } else {
             sendError(res, 403, "invalid_apix_session", "Invalid or expired Apix session.", { requestId: paymentDetails.requestId });
@@ -272,7 +311,7 @@ const apixMiddlewareWrapper = async (req: Request, res: Response, next: NextFunc
     }
 
     // Atomic Deduction Logic: Start Request
-    if (!apix.startRequest(validToken)) {
+    if (!await apix.startRequestState(validToken)) {
         sendError(res, 402, "session_quota_exceeded", "Session quota exceeded.", { requestId: paymentDetails.requestId });
         return;
     }
@@ -284,10 +323,20 @@ const apixMiddlewareWrapper = async (req: Request, res: Response, next: NextFunc
         quotaFinalized = true;
 
         if (res.statusCode >= 200 && res.statusCode < 300) {
-            apix.commitRequest(validToken);
+            void apix.commitRequestState(validToken).catch((error: any) => {
+                logEvent("apix.quota_commit_failed", {
+                    request_id: requestId,
+                    message: String(error?.message || error || 'unknown_error')
+                });
+            });
             return;
         }
-        apix.rollbackRequest(validToken);
+        void apix.rollbackRequestState(validToken).catch((error: any) => {
+            logEvent("apix.quota_rollback_failed", {
+                request_id: requestId,
+                message: String(error?.message || error || 'unknown_error')
+            });
+        });
         if (res.statusCode >= 500) {
             console.log("Apix: Request Rolled Back (Quota Refunded)");
         }
@@ -324,6 +373,10 @@ app.get('/apix-product', apixMiddlewareWrapper, (req: Request, res: Response) =>
     });
 });
 
-app.listen(port, () => {
-    console.log(`Demo Server running at http://localhost:${port}`);
-});
+export { app };
+
+if (process.env.NODE_ENV !== 'test') {
+    app.listen(port, () => {
+        console.log(`Demo Server running at http://localhost:${port}`);
+    });
+}

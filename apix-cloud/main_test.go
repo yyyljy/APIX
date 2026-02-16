@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -16,6 +17,9 @@ func resetVerificationStoreForTest() {
 	verificationStore.mu.Lock()
 	verificationStore.byPair = map[string]verificationRecord{}
 	verificationStore.byTxHash = map[string]string{}
+	verificationStore.sessions = map[string]sessionRecord{}
+	verificationStore.path = ""
+	verificationStore.lockPath = ""
 	verificationStore.mu.Unlock()
 	atomic.StoreUint64(&requestCounter, 0)
 }
@@ -113,6 +117,107 @@ func TestCleanupExpiredVerificationRecords(t *testing.T) {
 	}
 	if _, ok := getVerificationRecord("req_expired", "0xexpired"); ok {
 		t.Fatal("expected expired record to be removed")
+	}
+}
+
+func TestVerificationStorePersistsToFile(t *testing.T) {
+	resetVerificationStoreForTest()
+
+	storePath := filepath.Join(t.TempDir(), "verification-store.json")
+	initializeVerificationStore(storePath)
+	saveVerificationRecord("req_persist", "0xpersist", "token_persist", time.Now().Add(1*time.Minute))
+
+	resetVerificationStoreForTest()
+	initializeVerificationStore(storePath)
+
+	record, ok := getVerificationRecord("req_persist", "0xpersist")
+	if !ok {
+		t.Fatal("expected persisted record to be loaded from file")
+	}
+	if record.Token != "token_persist" {
+		t.Fatalf("expected token_persist, got %s", record.Token)
+	}
+}
+
+func TestSessionRecordLifecycle(t *testing.T) {
+	resetVerificationStoreForTest()
+
+	token := "session-token"
+	seedSessionRecord(token, 2, time.Now().Add(1*time.Minute))
+	if !validateSessionRecord(token) {
+		t.Fatal("expected seeded session to be valid")
+	}
+	if !startSessionRequest(token) {
+		t.Fatal("expected first start to succeed")
+	}
+	if startSessionRequest(token) {
+		t.Fatal("expected duplicate pending start to fail")
+	}
+	rollbackSessionRequest(token)
+	if !startSessionRequest(token) {
+		t.Fatal("expected start after rollback to succeed")
+	}
+	commitSessionRequest(token)
+	if !startSessionRequest(token) {
+		t.Fatal("expected final start to consume remaining quota")
+	}
+	commitSessionRequest(token)
+	if validateSessionRecord(token) {
+		t.Fatal("expected session to become invalid after quota consumed")
+	}
+}
+
+func TestSessionHandlers(t *testing.T) {
+	resetVerificationStoreForTest()
+	setupMockConfigForHandler()
+
+	token := "handler-token"
+	seedSessionRecord(token, 1, time.Now().Add(1*time.Minute))
+
+	validateReq := httptest.NewRequest(http.MethodPost, "/v1/session/validate", strings.NewReader(`{"token":"`+token+`"}`))
+	validateRes := httptest.NewRecorder()
+	sessionValidateHandler(validateRes, validateReq)
+	if validateRes.Code != http.StatusOK {
+		t.Fatalf("expected validate status 200, got %d", validateRes.Code)
+	}
+	var validatePayload SessionResponse
+	if err := json.Unmarshal(validateRes.Body.Bytes(), &validatePayload); err != nil {
+		t.Fatalf("failed to decode validate response: %v", err)
+	}
+	if !validatePayload.Valid {
+		t.Fatal("expected validate handler to return valid=true")
+	}
+
+	startReq := httptest.NewRequest(http.MethodPost, "/v1/session/start", strings.NewReader(`{"token":"`+token+`"}`))
+	startRes := httptest.NewRecorder()
+	sessionStartHandler(startRes, startReq)
+	if startRes.Code != http.StatusOK {
+		t.Fatalf("expected start status 200, got %d", startRes.Code)
+	}
+	var startPayload SessionResponse
+	if err := json.Unmarshal(startRes.Body.Bytes(), &startPayload); err != nil {
+		t.Fatalf("failed to decode start response: %v", err)
+	}
+	if !startPayload.Started {
+		t.Fatal("expected started=true")
+	}
+
+	commitReq := httptest.NewRequest(http.MethodPost, "/v1/session/commit", strings.NewReader(`{"token":"`+token+`"}`))
+	commitRes := httptest.NewRecorder()
+	sessionCommitHandler(commitRes, commitReq)
+	if commitRes.Code != http.StatusOK {
+		t.Fatalf("expected commit status 200, got %d", commitRes.Code)
+	}
+
+	finalValidateReq := httptest.NewRequest(http.MethodPost, "/v1/session/validate", strings.NewReader(`{"token":"`+token+`"}`))
+	finalValidateRes := httptest.NewRecorder()
+	sessionValidateHandler(finalValidateRes, finalValidateReq)
+	var finalValidatePayload SessionResponse
+	if err := json.Unmarshal(finalValidateRes.Body.Bytes(), &finalValidatePayload); err != nil {
+		t.Fatalf("failed to decode final validate response: %v", err)
+	}
+	if finalValidatePayload.Valid {
+		t.Fatal("expected session to be invalid after quota consumed")
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,11 +25,13 @@ type Config struct {
 	JWTIssuer               string
 	JWTKeyID                string
 	JWTTTL                  time.Duration
+	Environment             string
 	RPCURL                  string
 	RPCTimeout              time.Duration
 	RPCMaxRetries           int
 	EnableMockVerify        bool
 	DefaultMinConfirmations uint64
+	VerificationStorePath   string
 	AllowAnyOrigin          bool
 	AllowedOrigins          map[string]struct{}
 }
@@ -37,19 +40,34 @@ var appConfig Config
 var requestCounter uint64
 
 type verificationRecord struct {
-	Token     string
-	ExpiresAt time.Time
-	RequestID string
-	TxHash    string
+	Token     string    `json:"token"`
+	ExpiresAt time.Time `json:"expires_at"`
+	RequestID string    `json:"request_id"`
+	TxHash    string    `json:"tx_hash"`
+}
+
+type sessionRecord struct {
+	RemainingQuota int       `json:"remaining_quota"`
+	RequestState   string    `json:"request_state"`
+	ExpiresAt      time.Time `json:"expires_at"`
+}
+
+type verificationStoreSnapshot struct {
+	Records  []verificationRecord     `json:"records"`
+	Sessions map[string]sessionRecord `json:"sessions,omitempty"`
 }
 
 var verificationStore = struct {
 	mu       sync.RWMutex
 	byPair   map[string]verificationRecord
 	byTxHash map[string]string
+	sessions map[string]sessionRecord
+	path     string
+	lockPath string
 }{
 	byPair:   map[string]verificationRecord{},
 	byTxHash: map[string]string{},
+	sessions: map[string]sessionRecord{},
 }
 
 // Request payload for verification
@@ -72,6 +90,18 @@ type VerifyResponse struct {
 	Code      string `json:"code,omitempty"`
 	Retryable bool   `json:"retryable"`
 	RequestID string `json:"request_id,omitempty"`
+}
+
+type SessionRequest struct {
+	Token string `json:"token"`
+}
+
+type SessionResponse struct {
+	Valid   bool   `json:"valid,omitempty"`
+	Started bool   `json:"started,omitempty"`
+	OK      bool   `json:"ok,omitempty"`
+	Code    string `json:"code,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
 // Claims structure
@@ -187,79 +217,499 @@ func pairKey(requestID, txHash string) string {
 	return fmt.Sprintf("%s|%s", strings.TrimSpace(requestID), strings.ToLower(strings.TrimSpace(txHash)))
 }
 
-func getVerificationRecord(requestID, txHash string) (verificationRecord, bool) {
-	now := time.Now()
-	key := pairKey(requestID, txHash)
+func initializeVerificationStore(storePath string) {
+	trimmedPath := strings.TrimSpace(storePath)
+	verificationStore.mu.Lock()
+	defer verificationStore.mu.Unlock()
 
-	verificationStore.mu.RLock()
-	record, ok := verificationStore.byPair[key]
-	verificationStore.mu.RUnlock()
-	if !ok {
-		return verificationRecord{}, false
+	verificationStore.path = trimmedPath
+	verificationStore.lockPath = ""
+	verificationStore.byPair = map[string]verificationRecord{}
+	verificationStore.byTxHash = map[string]string{}
+	verificationStore.sessions = map[string]sessionRecord{}
+	if trimmedPath != "" {
+		verificationStore.lockPath = trimmedPath + ".lock"
 	}
-	if now.After(record.ExpiresAt) {
-		removeVerificationRecord(record.RequestID, record.TxHash)
-		return verificationRecord{}, false
+	loadVerificationStoreFromDiskLocked()
+}
+
+func acquireVerificationStoreFileLock(lockPath string) (func(), error) {
+	if strings.TrimSpace(lockPath) == "" {
+		return func() {}, nil
 	}
-	return record, true
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+		return nil, err
+	}
+	maxAttempts := 200
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		fd, err := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err == nil {
+			return func() {
+				_ = fd.Close()
+				_ = os.Remove(lockPath)
+			}, nil
+		}
+		if !os.IsExist(err) {
+			return nil, err
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return nil, fmt.Errorf("timed out acquiring verification store lock: %s", lockPath)
+}
+
+func withVerificationStoreLock(mutate bool, operation func()) {
+	verificationStore.mu.Lock()
+	defer verificationStore.mu.Unlock()
+
+	useDisk := strings.TrimSpace(verificationStore.path) != ""
+	hasDiskLock := false
+	release := func() {}
+	if useDisk {
+		lockRelease, err := acquireVerificationStoreFileLock(verificationStore.lockPath)
+		if err != nil {
+			logEvent("warn", "verify.store_lock_failed", map[string]interface{}{
+				"path":  verificationStore.path,
+				"error": err.Error(),
+			})
+		} else {
+			hasDiskLock = true
+			release = lockRelease
+			loadVerificationStoreFromDiskLocked()
+		}
+	}
+	defer release()
+
+	operation()
+
+	if mutate && (!useDisk || hasDiskLock) {
+		persistVerificationStoreLocked()
+	}
+}
+
+func loadVerificationStoreFromDiskLocked() {
+	verificationStore.byPair = map[string]verificationRecord{}
+	verificationStore.byTxHash = map[string]string{}
+	verificationStore.sessions = map[string]sessionRecord{}
+
+	trimmedPath := strings.TrimSpace(verificationStore.path)
+	if trimmedPath == "" {
+		return
+	}
+
+	raw, err := os.ReadFile(trimmedPath)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			logEvent("warn", "verify.store_load_failed", map[string]interface{}{
+				"path":  trimmedPath,
+				"error": err.Error(),
+			})
+		}
+		return
+	}
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return
+	}
+
+	now := time.Now()
+	records := []verificationRecord{}
+	sessions := map[string]sessionRecord{}
+
+	// Legacy format support: file used to be []verificationRecord
+	if trimmed[0] == '[' {
+		if err := json.Unmarshal(trimmed, &records); err != nil {
+			logEvent("warn", "verify.store_decode_failed", map[string]interface{}{
+				"path":  trimmedPath,
+				"error": err.Error(),
+			})
+			return
+		}
+	} else {
+		var snapshot verificationStoreSnapshot
+		if err := json.Unmarshal(trimmed, &snapshot); err != nil {
+			logEvent("warn", "verify.store_decode_failed", map[string]interface{}{
+				"path":  trimmedPath,
+				"error": err.Error(),
+			})
+			return
+		}
+		records = snapshot.Records
+		if snapshot.Sessions != nil {
+			sessions = snapshot.Sessions
+		}
+	}
+
+	for _, record := range records {
+		record.RequestID = strings.TrimSpace(record.RequestID)
+		record.TxHash = strings.ToLower(strings.TrimSpace(record.TxHash))
+		if record.RequestID == "" || record.TxHash == "" || now.After(record.ExpiresAt) {
+			continue
+		}
+		key := pairKey(record.RequestID, record.TxHash)
+		verificationStore.byPair[key] = record
+		verificationStore.byTxHash[record.TxHash] = record.RequestID
+	}
+	for token, session := range sessions {
+		normalizedToken := strings.TrimSpace(token)
+		if normalizedToken == "" || now.After(session.ExpiresAt) {
+			continue
+		}
+		if session.RequestState != "pending" {
+			session.RequestState = "idle"
+		}
+		if session.RemainingQuota < 0 {
+			session.RemainingQuota = 0
+		}
+		verificationStore.sessions[normalizedToken] = session
+	}
+}
+
+func persistVerificationStoreLocked() {
+	if strings.TrimSpace(verificationStore.path) == "" {
+		return
+	}
+
+	now := time.Now()
+	records := make([]verificationRecord, 0, len(verificationStore.byPair))
+	for _, record := range verificationStore.byPair {
+		if now.After(record.ExpiresAt) {
+			continue
+		}
+		records = append(records, record)
+	}
+	sessions := map[string]sessionRecord{}
+	for token, session := range verificationStore.sessions {
+		if now.After(session.ExpiresAt) {
+			continue
+		}
+		if session.RemainingQuota < 0 {
+			session.RemainingQuota = 0
+		}
+		sessions[token] = session
+	}
+
+	encoded, err := json.Marshal(verificationStoreSnapshot{
+		Records:  records,
+		Sessions: sessions,
+	})
+	if err != nil {
+		logEvent("warn", "verify.store_encode_failed", map[string]interface{}{
+			"path":  verificationStore.path,
+			"error": err.Error(),
+		})
+		return
+	}
+
+	if err := os.MkdirAll(filepath.Dir(verificationStore.path), 0o755); err != nil {
+		logEvent("warn", "verify.store_mkdir_failed", map[string]interface{}{
+			"path":  verificationStore.path,
+			"error": err.Error(),
+		})
+		return
+	}
+
+	tempPath := verificationStore.path + ".tmp"
+	if err := os.WriteFile(tempPath, encoded, 0o600); err != nil {
+		logEvent("warn", "verify.store_write_failed", map[string]interface{}{
+			"path":  verificationStore.path,
+			"error": err.Error(),
+		})
+		return
+	}
+	if err := os.Rename(tempPath, verificationStore.path); err != nil {
+		logEvent("warn", "verify.store_rename_failed", map[string]interface{}{
+			"path":  verificationStore.path,
+			"error": err.Error(),
+		})
+	}
+}
+
+func getVerificationRecord(requestID, txHash string) (verificationRecord, bool) {
+	result := verificationRecord{}
+	found := false
+	withVerificationStoreLock(true, func() {
+		key := pairKey(requestID, txHash)
+		record, ok := verificationStore.byPair[key]
+		if !ok {
+			return
+		}
+		if time.Now().After(record.ExpiresAt) {
+			delete(verificationStore.byPair, key)
+			delete(verificationStore.byTxHash, record.TxHash)
+			return
+		}
+		result = record
+		found = true
+	})
+	return result, found
 }
 
 func getTxHashOwner(txHash string) (string, bool) {
-	now := time.Now()
 	normalizedTxHash := strings.ToLower(strings.TrimSpace(txHash))
-
-	verificationStore.mu.RLock()
-	requestID, ok := verificationStore.byTxHash[normalizedTxHash]
-	verificationStore.mu.RUnlock()
-	if !ok {
-		return "", false
-	}
-
-	record, found := getVerificationRecord(requestID, normalizedTxHash)
-	if !found || now.After(record.ExpiresAt) {
-		removeVerificationRecord(requestID, normalizedTxHash)
-		return "", false
-	}
-	return requestID, true
+	result := ""
+	found := false
+	withVerificationStoreLock(true, func() {
+		requestID, ok := verificationStore.byTxHash[normalizedTxHash]
+		if !ok {
+			return
+		}
+		key := pairKey(requestID, normalizedTxHash)
+		record, recordExists := verificationStore.byPair[key]
+		if !recordExists || time.Now().After(record.ExpiresAt) {
+			delete(verificationStore.byTxHash, normalizedTxHash)
+			delete(verificationStore.byPair, key)
+			return
+		}
+		result = requestID
+		found = true
+	})
+	return result, found
 }
 
 func saveVerificationRecord(requestID, txHash, token string, expiresAt time.Time) {
-	record := verificationRecord{
-		Token:     token,
-		ExpiresAt: expiresAt,
-		RequestID: strings.TrimSpace(requestID),
-		TxHash:    strings.ToLower(strings.TrimSpace(txHash)),
-	}
-	key := pairKey(record.RequestID, record.TxHash)
-
-	verificationStore.mu.Lock()
-	verificationStore.byPair[key] = record
-	verificationStore.byTxHash[record.TxHash] = record.RequestID
-	verificationStore.mu.Unlock()
+	withVerificationStoreLock(true, func() {
+		record := verificationRecord{
+			Token:     token,
+			ExpiresAt: expiresAt,
+			RequestID: strings.TrimSpace(requestID),
+			TxHash:    strings.ToLower(strings.TrimSpace(txHash)),
+		}
+		key := pairKey(record.RequestID, record.TxHash)
+		verificationStore.byPair[key] = record
+		verificationStore.byTxHash[record.TxHash] = record.RequestID
+	})
 }
 
 func removeVerificationRecord(requestID, txHash string) {
-	normalizedTxHash := strings.ToLower(strings.TrimSpace(txHash))
-	key := pairKey(requestID, normalizedTxHash)
-
-	verificationStore.mu.Lock()
-	delete(verificationStore.byPair, key)
-	delete(verificationStore.byTxHash, normalizedTxHash)
-	verificationStore.mu.Unlock()
+	withVerificationStoreLock(true, func() {
+		normalizedTxHash := strings.ToLower(strings.TrimSpace(txHash))
+		key := pairKey(requestID, normalizedTxHash)
+		delete(verificationStore.byPair, key)
+		delete(verificationStore.byTxHash, normalizedTxHash)
+	})
 }
 
 func cleanupExpiredVerificationRecords(now time.Time) int {
 	removed := 0
-	verificationStore.mu.Lock()
-	for key, record := range verificationStore.byPair {
-		if now.After(record.ExpiresAt) {
-			delete(verificationStore.byPair, key)
-			delete(verificationStore.byTxHash, record.TxHash)
-			removed++
+	withVerificationStoreLock(true, func() {
+		for key, record := range verificationStore.byPair {
+			if now.After(record.ExpiresAt) {
+				delete(verificationStore.byPair, key)
+				delete(verificationStore.byTxHash, record.TxHash)
+				removed++
+			}
 		}
-	}
-	verificationStore.mu.Unlock()
+		for token, session := range verificationStore.sessions {
+			if now.After(session.ExpiresAt) {
+				delete(verificationStore.sessions, token)
+				removed++
+			}
+		}
+	})
 	return removed
+}
+
+func seedSessionRecord(token string, maxRequests int, expiresAt time.Time) {
+	normalizedToken := strings.TrimSpace(token)
+	if normalizedToken == "" {
+		return
+	}
+	withVerificationStoreLock(true, func() {
+		remainingQuota := maxRequests
+		if remainingQuota <= 0 {
+			remainingQuota = 1
+		}
+		verificationStore.sessions[normalizedToken] = sessionRecord{
+			RemainingQuota: remainingQuota,
+			RequestState:   "idle",
+			ExpiresAt:      expiresAt,
+		}
+	})
+}
+
+func validateSessionRecord(token string) bool {
+	normalizedToken := strings.TrimSpace(token)
+	if normalizedToken == "" {
+		return false
+	}
+	valid := false
+	withVerificationStoreLock(true, func() {
+		session, ok := verificationStore.sessions[normalizedToken]
+		if !ok {
+			return
+		}
+		if time.Now().After(session.ExpiresAt) {
+			delete(verificationStore.sessions, normalizedToken)
+			return
+		}
+		valid = session.RemainingQuota > 0
+	})
+	return valid
+}
+
+func startSessionRequest(token string) bool {
+	normalizedToken := strings.TrimSpace(token)
+	if normalizedToken == "" {
+		return false
+	}
+	started := false
+	withVerificationStoreLock(true, func() {
+		session, ok := verificationStore.sessions[normalizedToken]
+		if !ok {
+			return
+		}
+		if time.Now().After(session.ExpiresAt) {
+			delete(verificationStore.sessions, normalizedToken)
+			return
+		}
+		if session.RemainingQuota <= 0 || session.RequestState == "pending" {
+			return
+		}
+		session.RemainingQuota--
+		session.RequestState = "pending"
+		verificationStore.sessions[normalizedToken] = session
+		started = true
+	})
+	return started
+}
+
+func commitSessionRequest(token string) {
+	normalizedToken := strings.TrimSpace(token)
+	if normalizedToken == "" {
+		return
+	}
+	withVerificationStoreLock(true, func() {
+		session, ok := verificationStore.sessions[normalizedToken]
+		if !ok {
+			return
+		}
+		if session.RequestState != "pending" {
+			return
+		}
+		session.RequestState = "idle"
+		verificationStore.sessions[normalizedToken] = session
+	})
+}
+
+func rollbackSessionRequest(token string) {
+	normalizedToken := strings.TrimSpace(token)
+	if normalizedToken == "" {
+		return
+	}
+	withVerificationStoreLock(true, func() {
+		session, ok := verificationStore.sessions[normalizedToken]
+		if !ok {
+			return
+		}
+		if session.RequestState != "pending" {
+			return
+		}
+		session.RequestState = "idle"
+		session.RemainingQuota++
+		verificationStore.sessions[normalizedToken] = session
+	})
+}
+
+func decodeSessionRequest(r *http.Request) (SessionRequest, error) {
+	var req SessionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		return SessionRequest{}, err
+	}
+	req.Token = strings.TrimSpace(req.Token)
+	if req.Token == "" {
+		return SessionRequest{}, errors.New("token is required")
+	}
+	return req, nil
+}
+
+func sessionValidateHandler(w http.ResponseWriter, r *http.Request) {
+	if !applyCORSHeaders(w, r, appConfig) {
+		writeError(w, http.StatusForbidden, "cors_origin_not_allowed", "Origin is not allowed", false, "")
+		return
+	}
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", false, "")
+		return
+	}
+	req, err := decodeSessionRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error(), false, "")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(SessionResponse{Valid: validateSessionRecord(req.Token)})
+}
+
+func sessionStartHandler(w http.ResponseWriter, r *http.Request) {
+	if !applyCORSHeaders(w, r, appConfig) {
+		writeError(w, http.StatusForbidden, "cors_origin_not_allowed", "Origin is not allowed", false, "")
+		return
+	}
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", false, "")
+		return
+	}
+	req, err := decodeSessionRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error(), false, "")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(SessionResponse{Started: startSessionRequest(req.Token)})
+}
+
+func sessionCommitHandler(w http.ResponseWriter, r *http.Request) {
+	if !applyCORSHeaders(w, r, appConfig) {
+		writeError(w, http.StatusForbidden, "cors_origin_not_allowed", "Origin is not allowed", false, "")
+		return
+	}
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", false, "")
+		return
+	}
+	req, err := decodeSessionRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error(), false, "")
+		return
+	}
+	commitSessionRequest(req.Token)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(SessionResponse{OK: true})
+}
+
+func sessionRollbackHandler(w http.ResponseWriter, r *http.Request) {
+	if !applyCORSHeaders(w, r, appConfig) {
+		writeError(w, http.StatusForbidden, "cors_origin_not_allowed", "Origin is not allowed", false, "")
+		return
+	}
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed", false, "")
+		return
+	}
+	req, err := decodeSessionRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error(), false, "")
+		return
+	}
+	rollbackSessionRequest(req.Token)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(SessionResponse{OK: true})
 }
 
 func verifyHandler(w http.ResponseWriter, r *http.Request) {
@@ -399,6 +849,7 @@ func verifyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	saveVerificationRecord(req.RequestID, req.TxHash, tokenString, claims.ExpiresAt.Time)
+	seedSessionRecord(tokenString, claims.MaxRequests, claims.ExpiresAt.Time)
 
 	resp := VerifyResponse{
 		Valid:     true,
@@ -417,6 +868,11 @@ func verifyHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func loadConfig() (Config, error) {
+	environment := strings.ToLower(strings.TrimSpace(os.Getenv("APIX_ENV")))
+	if environment == "" {
+		environment = "development"
+	}
+
 	secret := strings.TrimSpace(os.Getenv("APIX_JWT_SECRET"))
 	if secret == "" {
 		return Config{}, errors.New("missing required env APIX_JWT_SECRET")
@@ -472,10 +928,14 @@ func loadConfig() (Config, error) {
 		minConf = v
 	}
 
-	allowAnyOrigin := true
+	verificationStorePath := strings.TrimSpace(os.Getenv("APIX_VERIFICATION_STORE_PATH"))
+	if verificationStorePath == "" {
+		verificationStorePath = filepath.Join(os.TempDir(), "apix-verification-store.json")
+	}
+
+	allowAnyOrigin := false
 	allowedOrigins := map[string]struct{}{}
 	if raw := strings.TrimSpace(os.Getenv("APIX_ALLOWED_ORIGINS")); raw != "" {
-		allowAnyOrigin = false
 		for _, item := range strings.Split(raw, ",") {
 			origin := strings.TrimSpace(item)
 			if origin == "" {
@@ -491,6 +951,21 @@ func loadConfig() (Config, error) {
 		if !allowAnyOrigin && len(allowedOrigins) == 0 {
 			return Config{}, errors.New("invalid APIX_ALLOWED_ORIGINS: expected comma-separated origins or '*'")
 		}
+	} else {
+		allowedOrigins["http://localhost:5173"] = struct{}{}
+		allowedOrigins["http://127.0.0.1:5173"] = struct{}{}
+	}
+
+	if environment == "production" {
+		if enableMockVerify {
+			return Config{}, errors.New("APIX_ENABLE_MOCK_VERIFY=true is not allowed in production")
+		}
+		if allowAnyOrigin {
+			return Config{}, errors.New("APIX_ALLOWED_ORIGINS='*' is not allowed in production")
+		}
+		if strings.TrimSpace(os.Getenv("APIX_VERIFICATION_STORE_PATH")) == "" {
+			return Config{}, errors.New("APIX_VERIFICATION_STORE_PATH is required in production")
+		}
 	}
 
 	return Config{
@@ -498,11 +973,13 @@ func loadConfig() (Config, error) {
 		JWTIssuer:               issuer,
 		JWTKeyID:                keyID,
 		JWTTTL:                  time.Duration(ttlSeconds) * time.Second,
+		Environment:             environment,
 		RPCURL:                  rpcURL,
 		RPCTimeout:              time.Duration(rpcTimeoutMS) * time.Millisecond,
 		RPCMaxRetries:           rpcMaxRetries,
 		EnableMockVerify:        enableMockVerify,
 		DefaultMinConfirmations: minConf,
+		VerificationStorePath:   verificationStorePath,
 		AllowAnyOrigin:          allowAnyOrigin,
 		AllowedOrigins:          allowedOrigins,
 	}, nil
@@ -755,6 +1232,7 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 	appConfig = cfg
+	initializeVerificationStore(appConfig.VerificationStorePath)
 
 	go func() {
 		ticker := time.NewTicker(1 * time.Minute)
@@ -769,10 +1247,28 @@ func main() {
 		}
 	}()
 
+	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":        "ok",
+			"service":       "apix-cloud",
+			"environment":   appConfig.Environment,
+			"mock_verify":   appConfig.EnableMockVerify,
+			"timestamp_utc": time.Now().UTC().Format(time.RFC3339),
+		})
+	})
 	http.HandleFunc("/v1/verify", verifyHandler)
+	http.HandleFunc("/v1/session/validate", sessionValidateHandler)
+	http.HandleFunc("/v1/session/start", sessionStartHandler)
+	http.HandleFunc("/v1/session/commit", sessionCommitHandler)
+	http.HandleFunc("/v1/session/rollback", sessionRollbackHandler)
 
 	port := ":8080"
-	fmt.Printf("Apix Cloud Server listening on %s (mock_verify=%v)\n", port, appConfig.EnableMockVerify)
+	fmt.Printf("Apix Cloud Server listening on %s (env=%s, mock_verify=%v, verification_store=%s)\n", port, appConfig.Environment, appConfig.EnableMockVerify, appConfig.VerificationStorePath)
 	if err := http.ListenAndServe(port, nil); err != nil {
 		log.Fatal(err)
 	}

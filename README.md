@@ -94,16 +94,28 @@ This POC validates a key product thesis:
 - Node.js + npm
 - Python 3
 
+Optional (for `execution/verification_test.py`):
+```bash
+pip install -r execution/requirements.txt
+```
+
 ### Option A: Run all services with orchestrator
 
 ```bash
-python execution/run_demo.py
+python execution/run_demo.py --mock-verify
 ```
 
 This starts:
 - Apix Cloud on `http://localhost:8080`
 - Demo backend on `http://localhost:3000`
 - Demo frontend (Vite dev server)
+- Readiness checks on each service before reporting success.
+
+For real RPC verification (non-mock), provide an RPC URL:
+
+```bash
+python execution/run_demo.py --rpc-url https://your-rpc-endpoint
+```
 
 ### Option B: Run manually
 
@@ -113,6 +125,7 @@ cd apix-cloud
 # optional: copy .env.example to .env and edit values
 set APIX_JWT_SECRET=change-this-secret
 set APIX_ENABLE_MOCK_VERIFY=true
+set APIX_VERIFICATION_STORE_PATH=.tmp/apix-verification-store.json
 set APIX_ALLOWED_ORIGINS=http://localhost:5173
 go run main.go
 ```
@@ -130,6 +143,11 @@ cd demo/backend
 # optional: copy .env.example to .env and edit values
 set APIX_JWT_SECRET=change-this-secret
 set APIX_FACILITATOR_URL=http://localhost:8080
+set APIX_SESSION_STORE_PATH=.tmp/apix-session-store.json
+set APIX_USE_CLOUD_SESSION_STATE=true
+set APIX_SESSION_AUTHORITY_URL=http://localhost:8080
+# recommended: set explicit metrics token for stable access control
+set APIX_METRICS_TOKEN=<strong-random-token>
 npm install
 npm start
 ```
@@ -145,9 +163,12 @@ npm run dev
 
 ## Current MVP Constraints
 
-- Demo defaults to mock verification (`APIX_ENABLE_MOCK_VERIFY=true`) unless RPC is configured.
-- Quota/session state is in-memory (process-local).
-- No production-grade persistence, replay protection, or chain finality checks yet.
+- Orchestrator defaults to real verification mode and requires `--rpc-url`; mock mode is explicit via `--mock-verify`.
+- Quota/session and verification state can be persisted to local files for single-instance durability.
+- Multi-instance deployments require a shared, lock-safe verification store path (`APIX_VERIFICATION_STORE_PATH`) across cloud replicas.
+- In `APIX_ENV=production`, mock verification and wildcard CORS are rejected at startup.
+- In `APIX_ENV=production`, backend session state must use Cloud authority (`APIX_USE_CLOUD_SESSION_STATE=true`).
+- `/metrics` always requires Bearer auth; if `APIX_METRICS_TOKEN` is missing/placeholder, backend auto-generates an ephemeral token for that process.
 
 ## Next Product Steps
 

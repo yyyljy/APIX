@@ -62,26 +62,41 @@ function testRollbackOnlyRefundsPendingRequest() {
 
 function testCommitOnlyTransitionsPendingToIdle() {
   const { middleware, token, sessionStore } = createMiddlewareWithSession(1);
-  const session = sessionStore.get(token);
 
   middleware.commitRequest(token);
+  let session = sessionStore.get(token);
   assert.equal(session.requestState, "idle");
   assert.equal(session.remainingQuota, 1);
 
   assert.equal(middleware.startRequest(token), true);
   middleware.commitRequest(token);
 
+  session = sessionStore.get(token);
   assert.equal(session.requestState, "idle");
   assert.equal(session.remainingQuota, 0);
 }
 
-try {
+async function testAsyncSessionStateMethodsUseLocalStoreByDefault() {
+  const { middleware, token } = createMiddlewareWithSession(1);
+
+  assert.equal(await middleware.validateSessionState(token), true);
+  assert.equal(await middleware.startRequestState(token), true);
+  await middleware.rollbackRequestState(token);
+  assert.equal(await middleware.startRequestState(token), true);
+  await middleware.commitRequestState(token);
+  assert.equal(await middleware.validateSessionState(token), false);
+}
+
+async function run() {
   testStartRequestMarksPendingAndBlocksDuplicateStart();
   testRollbackOnlyRefundsPendingRequest();
   testCommitOnlyTransitionsPendingToIdle();
+  await testAsyncSessionStateMethodsUseLocalStoreByDefault();
   console.log("apix-sdk-node tests passed");
-} catch (error) {
+}
+
+run().catch((error) => {
   console.error("apix-sdk-node tests failed");
   console.error(error);
   process.exit(1);
-}
+});

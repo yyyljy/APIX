@@ -1,5 +1,7 @@
 import axios from 'axios';
 import * as jwt from 'jsonwebtoken';
+import * as fs from 'fs';
+import * as path from 'path';
 
 export interface SessionData {
     claims: any;
@@ -37,7 +39,10 @@ export interface ApixConfig {
     apiKey?: string;
     facilitatorUrl?: string;
     jwtSecret?: string;
+    sessionStorePath?: string;
     sessionStore?: SessionStore;
+    sessionAuthorityUrl?: string;
+    useCloudSessionState?: boolean;
 }
 
 export interface VerificationResult {
@@ -82,20 +87,218 @@ export interface PaymentResponse {
     };
 }
 
+type SessionStoreSnapshot = Record<string, SessionData>;
+
+export class FileSessionStore implements SessionStore {
+    private filePath: string;
+    private lockPath: string;
+
+    constructor(filePath: string) {
+        this.filePath = path.resolve(filePath);
+        this.lockPath = `${this.filePath}.lock`;
+        this.ensureStorageDirectory();
+    }
+
+    get(token: string): SessionData | undefined {
+        const snapshot = this.readSnapshot();
+        return snapshot[token];
+    }
+
+    set(token: string, value: SessionData): void {
+        this.update(token, () => value);
+    }
+
+    delete(token: string): void {
+        this.update(token, () => undefined);
+    }
+
+    update(token: string, updater: (value: SessionData | undefined) => SessionData | undefined): SessionData | undefined {
+        return this.withLock(() => {
+            const snapshot = this.readSnapshot();
+            const current = snapshot[token];
+            const next = updater(current);
+            if (next) {
+                snapshot[token] = next;
+            } else {
+                delete snapshot[token];
+            }
+            this.writeSnapshot(snapshot);
+            return next;
+        });
+    }
+
+    private withLock<T>(operation: () => T): T {
+        this.ensureStorageDirectory();
+        const maxAttempts = 200;
+        for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+            let fd: number | null = null;
+            try {
+                fd = fs.openSync(this.lockPath, 'wx', 0o600);
+                const result = operation();
+                fs.closeSync(fd);
+                fs.rmSync(this.lockPath, { force: true });
+                return result;
+            } catch (error: any) {
+                if (fd !== null) {
+                    try { fs.closeSync(fd); } catch (_closeErr) { /* ignore */ }
+                    fs.rmSync(this.lockPath, { force: true });
+                }
+                if (error?.code !== 'EEXIST') {
+                    throw error;
+                }
+                const backoffUntil = Date.now() + 10;
+                while (Date.now() < backoffUntil) {
+                    // Busy-wait fallback to keep sync API.
+                }
+            }
+        }
+        throw new Error(`Timed out acquiring session store lock: ${this.lockPath}`);
+    }
+
+    private ensureStorageDirectory(): void {
+        const directory = path.dirname(this.filePath);
+        fs.mkdirSync(directory, { recursive: true });
+    }
+
+    private readSnapshot(): SessionStoreSnapshot {
+        try {
+            if (!fs.existsSync(this.filePath)) {
+                return {};
+            }
+            const raw = fs.readFileSync(this.filePath, 'utf8');
+            if (!raw.trim()) {
+                return {};
+            }
+            const parsed = JSON.parse(raw);
+            if (parsed && typeof parsed === 'object') {
+                return parsed as SessionStoreSnapshot;
+            }
+        } catch (_error) {
+            // Corrupted or inaccessible state should not crash request handling.
+        }
+        return {};
+    }
+
+    private writeSnapshot(snapshot: SessionStoreSnapshot): void {
+        this.ensureStorageDirectory();
+        const tempPath = `${this.filePath}.tmp`;
+        fs.writeFileSync(tempPath, JSON.stringify(snapshot), { encoding: 'utf8', mode: 0o600 });
+        fs.renameSync(tempPath, this.filePath);
+    }
+}
+
 export class ApixMiddleware {
     private config: ApixConfig;
+    private environment: string;
     private facilitatorUrl: string;
+    private sessionAuthorityUrl: string;
+    private useCloudSessionState: boolean;
     private sessionStore: SessionStore;
     private jwtSecret: string;
 
     constructor(config: ApixConfig = {}) {
         this.config = config;
+        this.environment = (process.env.APIX_ENV || 'development').trim().toLowerCase();
         this.facilitatorUrl = config.facilitatorUrl || 'http://localhost:8080';
+        this.sessionAuthorityUrl = config.sessionAuthorityUrl || process.env.APIX_SESSION_AUTHORITY_URL || this.facilitatorUrl;
+        this.useCloudSessionState = config.useCloudSessionState
+            ?? String(process.env.APIX_USE_CLOUD_SESSION_STATE || '').trim().toLowerCase() === 'true';
         this.jwtSecret = config.jwtSecret || process.env.APIX_JWT_SECRET || '';
         if (!this.jwtSecret) {
             throw new Error('Missing APIX_JWT_SECRET (or provide jwtSecret in ApixMiddleware config).');
         }
-        this.sessionStore = config.sessionStore || new InMemorySessionStore();
+
+        if (this.environment === 'production' && !this.useCloudSessionState) {
+            throw new Error('Missing distributed session authority: set APIX_USE_CLOUD_SESSION_STATE=true in production.');
+        }
+
+        if (this.useCloudSessionState) {
+            this.sessionStore = config.sessionStore || new InMemorySessionStore();
+        } else if (config.sessionStore) {
+            this.sessionStore = config.sessionStore;
+        } else {
+            const sessionStorePath = config.sessionStorePath || process.env.APIX_SESSION_STORE_PATH || '';
+            if (this.environment === 'production' && !sessionStorePath) {
+                throw new Error('Missing durable session store: set APIX_SESSION_STORE_PATH or provide sessionStore in production.');
+            }
+            this.sessionStore = sessionStorePath
+                ? new FileSessionStore(sessionStorePath)
+                : new InMemorySessionStore();
+        }
+    }
+
+    private updateSession(token: string, updater: (value: SessionData | undefined) => SessionData | undefined): SessionData | undefined {
+        const candidate = this.sessionStore as any;
+        if (candidate && typeof candidate.update === 'function') {
+            return candidate.update(token, updater);
+        }
+        const current = this.sessionStore.get(token);
+        const next = updater(current);
+        if (next) {
+            this.sessionStore.set(token, next);
+        } else if (current) {
+            this.sessionStore.delete(token);
+        }
+        return next;
+    }
+
+    private async postSessionAction(pathname: string, token: string): Promise<any> {
+        const response = await axios.post(`${this.sessionAuthorityUrl}${pathname}`, { token }, {
+            timeout: 5000
+        });
+        return response?.data || {};
+    }
+
+    async validateSessionState(token: string): Promise<boolean> {
+        if (!this.useCloudSessionState) {
+            return this.validateSession(token);
+        }
+        if (!token) {
+            return false;
+        }
+        try {
+            const payload = await this.postSessionAction('/v1/session/validate', token);
+            return !!payload?.valid;
+        } catch (_error) {
+            return false;
+        }
+    }
+
+    async startRequestState(token: string): Promise<boolean> {
+        if (!this.useCloudSessionState) {
+            return this.startRequest(token);
+        }
+        if (!token) {
+            return false;
+        }
+        try {
+            const payload = await this.postSessionAction('/v1/session/start', token);
+            return !!payload?.started;
+        } catch (_error) {
+            return false;
+        }
+    }
+
+    async commitRequestState(token: string): Promise<void> {
+        if (!this.useCloudSessionState) {
+            this.commitRequest(token);
+            return;
+        }
+        if (!token) {
+            return;
+        }
+        await this.postSessionAction('/v1/session/commit', token);
+    }
+
+    async rollbackRequestState(token: string): Promise<void> {
+        if (!this.useCloudSessionState) {
+            this.rollbackRequest(token);
+            return;
+        }
+        if (!token) {
+            return;
+        }
+        await this.postSessionAction('/v1/session/rollback', token);
     }
 
     /**
@@ -129,11 +332,13 @@ export class ApixMiddleware {
                 try {
                     const decoded = jwt.verify(token, this.jwtSecret) as any;
 
-                    this.sessionStore.set(token, {
-                        claims: decoded,
-                        remainingQuota: decoded.max_requests || 10,
-                        requestState: 'idle'
-                    });
+                    if (!this.useCloudSessionState) {
+                        this.sessionStore.set(token, {
+                            claims: decoded,
+                            remainingQuota: decoded.max_requests || 10,
+                            requestState: 'idle'
+                        });
+                    }
 
                     return {
                         success: true,
@@ -191,7 +396,7 @@ export class ApixMiddleware {
         // Check if token expired.
         const now = Math.floor(Date.now() / 1000);
         if (session.claims.exp && session.claims.exp < now) {
-            this.sessionStore.delete(token);
+            this.updateSession(token, () => undefined);
             return false;
         }
 
@@ -206,32 +411,45 @@ export class ApixMiddleware {
      * Starts a request and marks quota deduction as pending.
      */
     startRequest(token: string): boolean {
-        const session = this.sessionStore.get(token);
-        if (!session || session.remainingQuota <= 0) return false;
-        if (session.requestState === 'pending') return false;
-
-        session.requestState = 'pending';
-        session.remainingQuota -= 1;
-        return true;
+        let started = false;
+        const nextSession = this.updateSession(token, (session) => {
+            if (!session || session.remainingQuota <= 0) return session;
+            if (session.requestState === 'pending') return session;
+            started = true;
+            return {
+                ...session,
+                requestState: 'pending',
+                remainingQuota: session.remainingQuota - 1
+            };
+        });
+        return started && !!nextSession && nextSession.requestState === 'pending';
     }
 
     /**
      * Commits a pending deduction after successful request handling.
      */
     commitRequest(token: string): void {
-        const session = this.sessionStore.get(token);
-        if (!session || session.requestState !== 'pending') return;
-        session.requestState = 'idle';
+        this.updateSession(token, (session) => {
+            if (!session || session.requestState !== 'pending') return session;
+            return {
+                ...session,
+                requestState: 'idle'
+            };
+        });
     }
 
     /**
      * Rolls back a pending deduction when request handling fails.
      */
     rollbackRequest(token: string): void {
-        const session = this.sessionStore.get(token);
-        if (!session || session.requestState !== 'pending') return;
-        session.requestState = 'idle';
-        session.remainingQuota += 1;
+        this.updateSession(token, (session) => {
+            if (!session || session.requestState !== 'pending') return session;
+            return {
+                ...session,
+                requestState: 'idle',
+                remainingQuota: session.remainingQuota + 1
+            };
+        });
     }
 
     /**

@@ -5,7 +5,7 @@
   "main": "index.ts",
   "scripts": {
     "start": "tsx index.ts",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "NODE_ENV=test tsc index.ts index.test.ts --module commonjs --target es2020 --esModuleInterop --outDir .test-dist && node .test-dist/index.test.js && node -e \"require('fs').rmSync('.test-dist',{recursive:true,force:true})\""
   },
   "keywords": [],
   "author": "",
@@ -20,7 +20,11 @@
   "devDependencies": {
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
+    "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^25.2.0",
+    "@types/supertest": "^6.0.3",
+    "jsonwebtoken": "^9.0.2",
+    "supertest": "^7.1.4",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3"
   }
