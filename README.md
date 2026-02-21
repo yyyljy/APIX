@@ -174,7 +174,7 @@ npm run dev
 
 ## Next Product Steps
 
-1. **Robust Quota Safety:** Enforce strict rollback/commit states internally in SDK to properly handle aborted or 5xx requests.
+1. **Quota Safety Hardening:** Keep strict rollback/commit boundaries and add explicit middleware timeout/retry contract between SDK and upstream handlers.
 2. **Environment Separation:** Finalize secure multi-instance session storage (Redis) and restrict CORS/policies based on dev/prod environments (`APIX_ALLOWED_ORIGINS`).
-3. **Production Verification:** Replace mock tx validation with real chain RPC/indexer verification for mainnet usage.
-4. **Observability:** Centralize structured logging and metric reporting (latency, failure reasons) via unified correlation IDs.
+3. **Protocol Extension:** Add `L402`-style token credential path while preserving current `Authorization/PAYMENT-*` compatibility.
+4. **Observability:** Centralize structured logging and metric reporting (latency, failure reasons, rollback ratio) via unified correlation IDs and standardized request IDs.

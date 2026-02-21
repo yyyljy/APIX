@@ -210,21 +210,30 @@ const parsePaymentSignature = (value: string): string => {
 };
 
 const extractPaymentProof = (req: Request): string => {
-    const authHeader = req.headers['authorization'];
-    if (authHeader && authHeader.startsWith('Apix ')) {
-        const token = authHeader.split(' ')[1];
+    const normalizeHeaderValue = (value: string | string[] | undefined): string => {
+        if (typeof value === 'string') {
+            return value.trim();
+        }
+        if (!Array.isArray(value)) {
+            return '';
+        }
+        for (const item of value) {
+            if (typeof item === 'string' && item.trim()) {
+                return item.trim();
+            }
+        }
+        return '';
+    };
+
+    const authHeader = normalizeHeaderValue(req.headers['authorization']);
+    if (authHeader && authHeader.toLowerCase().startsWith('apix ')) {
+        const token = authHeader.substring(authHeader.indexOf(' ') + 1);
         if (token) return token.trim();
     }
 
-    const paymentSignature = req.headers['payment-signature'];
+    const paymentSignature = normalizeHeaderValue(req.headers['payment-signature']);
     if (typeof paymentSignature === 'string') {
         return parsePaymentSignature(paymentSignature);
-    }
-    if (Array.isArray(paymentSignature) && paymentSignature.length > 0) {
-        const firstValue = paymentSignature[0];
-        if (typeof firstValue === 'string') {
-            return parsePaymentSignature(firstValue);
-        }
     }
     return '';
 };
@@ -290,6 +299,13 @@ const apixMiddlewareWrapper = async (req: Request, res: Response, next: NextFunc
         const result = await apix.verifyPayment(token, paymentDetails);
 
         if (!result.success || !result.token) {
+            logEvent("apix.verify_failed", {
+                request_id: requestId,
+                tx_hash: token,
+                code: result.code || "apix_verification_failed",
+                retryable: result.retryable ?? false,
+                message: result.message || "Apix verification failed."
+            });
             sendError(
                 res,
                 403,
