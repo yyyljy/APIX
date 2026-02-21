@@ -1,20 +1,23 @@
 ﻿# APIX
 
-APIX is a proof-of-concept for **pay-per-request API access** that compares:
-- Traditional Web2 payment flow (Stripe-like session token)
-- Web3 payment flow (x402/L402-style challenge + on-chain proof)
+APIX is a **Decentralized Payment Middleware SDK** acting as a "Stripe for AI Agents." It enables any API provider to monetize their data smoothly over the **Avalanche L1** using the **x402 protocol**.
 
-The goal is to show that both payment rails can unlock the **same premium API resource**, while using different authentication and settlement logic.
+The project merges the **speed of Web2** with the **trust of Web3** to provide:
+- **For Sellers:** Monetize any API with just 3 lines of code. No platform lock-in.
+- **For Buyers (AI Agents):** Millisecond-latency access to global data without KYC or credit cards.
 
-## What This Project Is Trying To Build
+## Core Concept: Verifiable Atomic Session (VAS)
 
-You are building a marketplace-style API access model where:
-1. A client requests a protected resource.
-2. The server can respond with `402 Payment Required` and payment instructions.
-3. The client pays and submits proof.
-4. The backend verifies proof, issues a short-lived session token, and enforces request quota.
+To solve the friction between blockchain latency and high-frequency API performance, APIX introduces the **Verifiable Atomic Session (VAS)**:
 
-In short: **"Payment as API authentication"** for Web3-native usage, with a direct comparison to standard Web2 payment middleware.
+1. **Fast Entry (Performance) - Delegated Verification:** The SDK delegates blockchain verification to a stateless intermediary (Apix Cloud). Once verified, the SDK caches a short-lived session JWT to process subsequent requests with microsecond latency.
+2. **Safe Exit (Trust) - Conditional Deduction:** Buyers pay upfront, but the session quota is only committed on a successful HTTP 200 OK response. If the server fails (e.g., 500), the quota rolls back, guaranteeing a "No Data, No Pay" atomic escrow.
+
+## Architecture: "Thin SDK, Fat Cloud"
+
+- **Apix SDK**: A thin traffic interceptor and policy enforcer installed on the seller's server (Node.js/Go/Python).
+- **Apix Cloud**: A stateless validator that handles blockchain interaction, manages nonces, and prevents replay attacks (Go).
+- **Smart Contracts**: Handles settlement and on-chain event logging on Avalanche L1 (`ApixPaymentRouter`).
 
 ## Repository Structure
 
@@ -57,14 +60,13 @@ In short: **"Payment as API authentication"** for Web3-native usage, with a dire
 ## End-to-End Flow (Apix)
 
 1. Client calls protected endpoint without proof.
-2. Backend returns `402 Payment Required` with payment metadata.
+2. Backend returns `402 Payment Required` with standard HTTP headers (`WWW-Authenticate: Apix realm="Apix Protected", request_id="<uuid>", ...`).
 3. Client performs payment (mocked wallet interaction in demo) and obtains tx hash.
-4. Client retries request with payment proof (`PAYMENT-SIGNATURE` and/or `Authorization: Apix <txHash>`).
-5. SDK asks Apix Cloud to verify tx hash.
-6. Cloud returns signed JWT session token.
-7. Cloud enforces idempotency (`request_id + tx_hash`) and replay protection for reused tx hash.
-8. SDK caches session, validates expiry/quota, and applies atomic deduction logic.
-9. Protected resource is returned with proof token.
+4. Client retries request with payment proof via header (`Authorization: Apix <tx_hash>`).
+5. SDK delegates verification by asking Apix Cloud to verify the tx hash.
+6. Cloud returns signed JWT session token and enforces idempotency (`request_id + tx_hash`) and replay protection.
+7. SDK caches session, validates expiry/quota, and marks session as `PENDING`.
+8. Protected resource is returned. If successful (200 OK), quota is visually committed; if failed (5xx), quota safely rolls back.
 
 ## Error Envelope
 
@@ -172,8 +174,7 @@ npm run dev
 
 ## Next Product Steps
 
-1. Replace mock tx validation with real chain RPC/indexer verification.
-2. Externalize secrets and add key rotation.
-3. Move session/quota tracking to Redis or durable store.
-4. Add robust failure semantics for commit/rollback and idempotency.
-5. Define protocol-level compatibility for x402/L402 clients.
+1. **Robust Quota Safety:** Enforce strict rollback/commit states internally in SDK to properly handle aborted or 5xx requests.
+2. **Environment Separation:** Finalize secure multi-instance session storage (Redis) and restrict CORS/policies based on dev/prod environments (`APIX_ALLOWED_ORIGINS`).
+3. **Production Verification:** Replace mock tx validation with real chain RPC/indexer verification for mainnet usage.
+4. **Observability:** Centralize structured logging and metric reporting (latency, failure reasons) via unified correlation IDs.
