@@ -147,21 +147,44 @@ func TestSessionRecordLifecycle(t *testing.T) {
 	if !validateSessionRecord(token) {
 		t.Fatal("expected seeded session to be valid")
 	}
-	if !startSessionRequest(token) {
+	startResult := startSessionRequest(token)
+	if !startResult.Started {
 		t.Fatal("expected first start to succeed")
 	}
-	if startSessionRequest(token) {
+	if startResult.Code != "session_started" {
+		t.Fatalf("expected session_started, got %s", startResult.Code)
+	}
+	startResult = startSessionRequest(token)
+	if startResult.Started {
 		t.Fatal("expected duplicate pending start to fail")
 	}
+	if startResult.Code != "session_request_in_progress" {
+		t.Fatalf("expected session_request_in_progress, got %s", startResult.Code)
+	}
 	rollbackSessionRequest(token)
-	if !startSessionRequest(token) {
+	startResult = startSessionRequest(token)
+	if !startResult.Started {
 		t.Fatal("expected start after rollback to succeed")
 	}
-	commitSessionRequest(token)
-	if !startSessionRequest(token) {
-		t.Fatal("expected final start to consume remaining quota")
+	if startResult.Code != "session_started" {
+		t.Fatalf("expected session_started, got %s", startResult.Code)
 	}
 	commitSessionRequest(token)
+	startResult = startSessionRequest(token)
+	if !startResult.Started {
+		t.Fatal("expected final start to consume remaining quota")
+	}
+	if startResult.Code != "session_started" {
+		t.Fatalf("expected session_started, got %s", startResult.Code)
+	}
+	commitSessionRequest(token)
+	startResult = startSessionRequest(token)
+	if startResult.Started {
+		t.Fatal("expected quota exhausted start to fail")
+	}
+	if startResult.Code != "session_quota_exceeded" {
+		t.Fatalf("expected session_quota_exceeded, got %s", startResult.Code)
+	}
 	if validateSessionRecord(token) {
 		t.Fatal("expected session to become invalid after quota consumed")
 	}
@@ -200,6 +223,9 @@ func TestSessionHandlers(t *testing.T) {
 	}
 	if !startPayload.Started {
 		t.Fatal("expected started=true")
+	}
+	if startPayload.Code != "session_started" {
+		t.Fatalf("expected code=session_started, got %s", startPayload.Code)
 	}
 
 	commitReq := httptest.NewRequest(http.MethodPost, "/v1/session/commit", strings.NewReader(`{"token":"`+token+`"}`))

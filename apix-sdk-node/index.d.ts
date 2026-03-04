@@ -3,6 +3,11 @@ export interface SessionData {
     remainingQuota: number;
     requestState: 'idle' | 'pending';
 }
+export interface SessionStartResult {
+    started: boolean;
+    code?: string;
+    message?: string;
+}
 export interface SessionStore {
     get(token: string): SessionData | undefined;
     set(token: string, value: SessionData): void;
@@ -50,6 +55,9 @@ export interface PaymentResponse {
     body: {
         error: string;
         message: string;
+        code?: string;
+        retryable?: boolean;
+        request_id?: string;
         details: {
             request_id: string;
             chain_id: number;
@@ -89,6 +97,7 @@ export declare class ApixMiddleware {
     private postSessionAction;
     validateSessionState(token: string): Promise<boolean>;
     startRequestState(token: string): Promise<boolean>;
+    startRequestStateWithResult(token: string): Promise<SessionStartResult>;
     commitRequestState(token: string): Promise<void>;
     rollbackRequestState(token: string): Promise<void>;
     /**

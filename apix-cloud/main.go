@@ -104,6 +104,12 @@ type SessionResponse struct {
 	Message string `json:"message,omitempty"`
 }
 
+type SessionStartResult struct {
+	Started bool   `json:"started,omitempty"`
+	Code    string `json:"code,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
 // Claims structure
 type ApixClaims struct {
 	TxHash      string `json:"tx_hash"`
@@ -547,12 +553,19 @@ func validateSessionRecord(token string) bool {
 	return valid
 }
 
-func startSessionRequest(token string) bool {
+
+func startSessionRequest(token string) SessionStartResult {
 	normalizedToken := strings.TrimSpace(token)
-	if normalizedToken == "" {
-		return false
+	result := SessionStartResult{
+		Started: false,
+		Code:    "session_not_found",
+		Message: "Session token not found or expired.",
 	}
-	started := false
+
+	if normalizedToken == "" {
+		return result
+	}
+
 	withVerificationStoreLock(true, func() {
 		session, ok := verificationStore.sessions[normalizedToken]
 		if !ok {
@@ -560,17 +573,31 @@ func startSessionRequest(token string) bool {
 		}
 		if time.Now().After(session.ExpiresAt) {
 			delete(verificationStore.sessions, normalizedToken)
+			result.Code = "session_not_found"
+			result.Message = "Session token not found or expired."
 			return
 		}
-		if session.RemainingQuota <= 0 || session.RequestState == "pending" {
+		if session.RemainingQuota <= 0 {
+			result.Code = "session_quota_exceeded"
+			result.Message = "Session quota exceeded."
+			return
+		}
+		if session.RequestState == "pending" {
+			result.Code = "session_request_in_progress"
+			result.Message = "Session request is already in progress."
 			return
 		}
 		session.RemainingQuota--
 		session.RequestState = "pending"
 		verificationStore.sessions[normalizedToken] = session
-		started = true
+		result = SessionStartResult{
+			Started: true,
+			Code:    "session_started",
+			Message: "Session request started.",
+		}
 	})
-	return started
+
+	return result
 }
 
 func commitSessionRequest(token string) {
@@ -663,7 +690,7 @@ func sessionStartHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(SessionResponse{Started: startSessionRequest(req.Token)})
+	_ = json.NewEncoder(w).Encode(startSessionRequest(req.Token))
 }
 
 func sessionCommitHandler(w http.ResponseWriter, r *http.Request) {

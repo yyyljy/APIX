@@ -3,6 +3,7 @@ import PaymentModal from "../components/PaymentModal";
 import {
   fetchProxyResource,
   fetchStripeProduct,
+  getErrorSnapshot,
   verifyPayment,
 } from "../utils/api";
 import { createTransaction, updateTransaction } from "../utils/transactions";
@@ -24,6 +25,7 @@ const DemoPage = () => {
     const lines = [];
     if (typeof status === "number") lines.push(`status: ${status}`);
     if (typeof payload.success === "boolean") lines.push(`success: ${payload.success}`);
+    const error = payload?.error || {};
     if (payload?.error?.code) lines.push(`code: ${payload.error.code}`);
     if (payload?.error?.request_id) lines.push(`request_id: ${payload.error.request_id}`);
     if (payload?.raw?.proof || payload?.proof || payload?.data?.access_token) {
@@ -31,6 +33,7 @@ const DemoPage = () => {
       lines.push(`proof: ${String(token).slice(0, 24)}...`);
     }
     if (payload?.raw?.method || payload?.method) lines.push(`method: ${payload?.raw?.method || payload?.method}`);
+    if (typeof error.retryable === "boolean") lines.push(`retryable: ${error.retryable}`);
     if (payload?.error?.message) lines.push(`message: ${payload.error.message}`);
     return lines.join("\n") || "No summary fields";
   };
@@ -85,7 +88,14 @@ const DemoPage = () => {
       if (res.status === 402) {
         const details = payload?.error?.details || payload?.details;
         if (!details) {
-          setApixTrace("Payment challenge parse failed.");
+          const snapshot = getErrorSnapshot("payment_required", {
+            status: res.status,
+            request_id: payload?.error?.request_id || null,
+          });
+          const normalized = { ...payload, error: { ...snapshot, ...(payload?.error || {}) } };
+          setApixTrace(
+            `2. Received 402 Payment Required\n${summarizePayload(normalized, res.status)}`
+          );
           setApixRaw(payload);
           return;
         }
@@ -152,13 +162,16 @@ const DemoPage = () => {
             status: "failed",
             txHash: mockTxHash,
             requestId: paymentDetails.requestId,
-            message: verifyData?.error?.message || "Verification failed",
+            message: `${verifyData?.error?.code || "verification_failed"}: ${verifyData?.error?.message || "Verification failed"}`
+              + (verifyData?.error?.retryable ? " (retryable)" : ""),
           });
         }
         setApixRaw(verifyData);
         setApixTrace(
           (prev) =>
-            `${prev}\n\nVerification failed: ${verifyData?.error?.message || "Unknown error"}`,
+            `${prev}\n\nVerification failed: ${verifyData?.error?.code || "verification_failed"}\n`
+            + `${verifyData?.error?.message || "Unknown error"}`
+            + (verifyData?.error?.retryable ? "\nRetry with a new tx hash." : "")
         );
         setIsProcessingApix(false);
         return;
@@ -397,5 +410,3 @@ const DemoPage = () => {
 };
 
 export default DemoPage;
-
-

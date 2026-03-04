@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { ethers } from 'ethers';
-import { fetchProxyResource, verifyPayment } from '../../utils/api';
+import { fetchProxyResource, getErrorSnapshot, verifyPayment } from '../../utils/api';
 import Sparkline from '../Sparkline';
 import {
     BarChart3,
@@ -33,7 +33,7 @@ export default function Overview() {
         setResourceData(null);
         addLog("Requesting Restricted Resource...", "info");
 
-        try {
+    try {
             // 1. Trigger 402
             const response = await fetchProxyResource("listing_001", accessToken);
             const data = await response.json();
@@ -45,7 +45,13 @@ export default function Overview() {
                 addLog("402 Payment Required received.", "warning");
                 await handlePayment(data.error.details);
             } else {
-                addLog(`Unexpected Error: ${response.status}`, "error");
+                const error = data?.error || {};
+                const snapshot = getErrorSnapshot(
+                    error.code,
+                    { status: response.status, request_id: error.request_id || null, message: error.message },
+                );
+                const retryText = snapshot.retryable ? " You can retry." : " Not retryable without a new attempt.";
+                addLog(`Unexpected Error [${snapshot.code}] [${snapshot.status}]: ${snapshot.message}.${retryText}`, "error");
             }
         } catch (err) {
             addLog(`Request Failed: ${err.message}`, "error");
@@ -95,9 +101,22 @@ export default function Overview() {
                 if (retryRes.status === 200) {
                     setResourceData(retryData.data);
                     addLog("Final Access Granted!", "success");
+                } else {
+                    const retryError = retryData?.error || {};
+                    const retrySnapshot = getErrorSnapshot(
+                        retryError.code,
+                        { status: retryRes.status, request_id: retryError.request_id || null, message: retryError.message }
+                    );
+                    addLog(`Retry failed [${retrySnapshot.code}] [${retrySnapshot.status}]: ${retrySnapshot.message}`, "error");
                 }
             } else {
-                addLog("Verification Failed.", "error");
+                const err = verifyData.error || {};
+                const vSnapshot = getErrorSnapshot(
+                    err.code,
+                    { status: verifyRes.status, request_id: err.request_id || null, message: err.message }
+                );
+                const retryAdvice = vSnapshot.retryable ? "Retry with a new tx hash." : "Check transaction/payment state.";
+                addLog(`Verification Failed [${vSnapshot.code}] [${vSnapshot.status}]: ${vSnapshot.message} ${retryAdvice}`, "error");
             }
 
         } catch (err) {

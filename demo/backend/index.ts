@@ -32,6 +32,120 @@ type RouteMetric = {
     maxLatencyMs: number;
 };
 
+type ApiErrorDefinition = {
+    status: number;
+    message: string;
+    retryable: boolean;
+};
+
+const API_ERROR_DEFINITIONS: Record<string, ApiErrorDefinition> = {
+    cors_origin_not_allowed: {
+        status: 403,
+        message: "Origin is not allowed by CORS policy.",
+        retryable: false
+    },
+    method_not_allowed: {
+        status: 405,
+        message: "Method not allowed.",
+        retryable: false
+    },
+    invalid_request: {
+        status: 400,
+        message: "Invalid request.",
+        retryable: false
+    },
+    invalid_request_body: {
+        status: 400,
+        message: "Invalid request body.",
+        retryable: false
+    },
+    missing_tx_hash: {
+        status: 400,
+        message: "Transaction hash is missing.",
+        retryable: false
+    },
+    tx_hash_already_used: {
+        status: 403,
+        message: "Transaction hash already used by another request.",
+        retryable: false
+    },
+    invalid_cloud_token: {
+        status: 403,
+        message: "Invalid token from Cloud.",
+        retryable: false
+    },
+    signing_error: {
+        status: 500,
+        message: "Internal server error.",
+        retryable: true
+    },
+    facilitator_unreachable: {
+        status: 503,
+        message: "Failed to connect to Apix Cloud.",
+        retryable: true
+    },
+    metrics_unauthorized: {
+        status: 401,
+        message: "Metrics endpoint requires a valid bearer token.",
+        retryable: false
+    },
+    invalid_stripe_session: {
+        status: 401,
+        message: "Missing or invalid Stripe session token.",
+        retryable: false
+    },
+    invalid_apix_session: {
+        status: 403,
+        message: "Invalid or expired Apix session.",
+        retryable: false
+    },
+    apix_verification_failed: {
+        status: 403,
+        message: "Apix verification failed.",
+        retryable: false
+    },
+    session_not_found: {
+        status: 403,
+        message: "Session token not found or expired.",
+        retryable: false
+    },
+    session_request_in_progress: {
+        status: 409,
+        message: "Session request is already in progress.",
+        retryable: true
+    },
+    session_quota_exceeded: {
+        status: 402,
+        message: "Session quota exceeded.",
+        retryable: false
+    },
+    session_start_failed: {
+        status: 403,
+        message: "Session start failed.",
+        retryable: false
+    },
+    session_state_unavailable: {
+        status: 503,
+        message: "Session state service is unavailable.",
+        retryable: true
+    },
+    payment_required: {
+        status: 402,
+        message: "Payment required.",
+        retryable: false
+    },
+    request_failed: {
+        status: 400,
+        message: "Request failed.",
+        retryable: false
+    },
+    internal_error: {
+        status: 500,
+        message: "Internal error.",
+        retryable: true
+    }
+};
+
 const metrics = {
     totalRequests: 0,
     totalErrors: 0,
@@ -82,20 +196,23 @@ const PAYMENT_PROFILE = {
 
 const sendError = (
     res: Response,
-    status: number,
     code: string,
-    message: string,
-    options?: { retryable?: boolean; requestId?: string }
+    options?: { status?: number; message?: string; retryable?: boolean; requestId?: string; }
 ) => {
+    const definition = API_ERROR_DEFINITIONS[code];
+    const status = options?.status ?? definition?.status ?? 500;
+    const message = options?.message ?? definition?.message ?? code;
+    const retryable = options?.retryable ?? definition?.retryable ?? false;
+    const requestId = options?.requestId;
+
     res.status(status).json({
         error: status >= 500 ? "Internal Error" : "Request Failed",
         code,
         message,
-        retryable: options?.retryable ?? false,
-        request_id: options?.requestId
+        retryable,
+        request_id: requestId
     });
 };
-
 const getOrCreateRequestId = (req: Request): string => {
     const fromHeader = req.header('X-Request-ID');
     if (fromHeader && fromHeader.trim()) return fromHeader.trim();
@@ -164,7 +281,7 @@ app.get('/health', (_req: Request, res: Response) => {
 app.get('/metrics', (_req: Request, res: Response) => {
     const authHeader = String(_req.headers['authorization'] || '');
     if (authHeader !== `Bearer ${metricsToken}`) {
-        sendError(res, 401, "metrics_unauthorized", "Metrics endpoint requires a valid bearer token.");
+        sendError(res, "metrics_unauthorized", { requestId: getOrCreateRequestId(_req) });
         return;
     }
 
@@ -248,7 +365,7 @@ const stripeMiddleware = (req: Request, res: Response, next: NextFunction) => {
 
     // Simulate typical Bearer token check
     if (!authHeader || !authHeader.startsWith('Bearer stripe_')) {
-        sendError(res, 401, "invalid_stripe_session", "Missing or invalid Stripe session token.", { requestId: (req as any).requestId });
+        sendError(res, "invalid_stripe_session", { requestId: (req as any).requestId });
         return;
     }
 
@@ -275,9 +392,15 @@ const apixMiddlewareWrapper = async (req: Request, res: Response, next: NextFunc
     if (!token) {
         // Standard x402/L402 Pattern: Return WWW-Authenticate header
         const paymentResponse = apix.createPaymentRequest(paymentDetails);
+        const paymentBody = {
+            ...paymentResponse.body,
+            code: paymentResponse.body.code || "payment_required",
+            message: paymentResponse.body.message || "Payment required to access premium resource.",
+            retryable: paymentResponse.body.retryable ?? false
+        };
 
         res.set(paymentResponse.headers);
-        res.status(402).json(paymentResponse.body);
+        res.status(402).json(paymentBody);
         return;
     }
 
@@ -292,10 +415,12 @@ const apixMiddlewareWrapper = async (req: Request, res: Response, next: NextFunc
         if (!result.success || !result.token) {
             sendError(
                 res,
-                403,
                 result.code || "apix_verification_failed",
-                result.message || "Apix verification failed.",
-                { retryable: result.retryable ?? false, requestId: result.requestId || paymentDetails.requestId }
+                {
+                    retryable: result.retryable ?? undefined,
+                    requestId: result.requestId || paymentDetails.requestId,
+                    message: result.message
+                }
             );
             return;
         }
@@ -305,14 +430,30 @@ const apixMiddlewareWrapper = async (req: Request, res: Response, next: NextFunc
         if (await apix.validateSessionState(token)) {
             validToken = token;
         } else {
-            sendError(res, 403, "invalid_apix_session", "Invalid or expired Apix session.", { requestId: paymentDetails.requestId });
+            sendError(res, "invalid_apix_session", { requestId: paymentDetails.requestId });
             return;
         }
     }
 
     // Atomic Deduction Logic: Start Request
-    if (!await apix.startRequestState(validToken)) {
-        sendError(res, 402, "session_quota_exceeded", "Session quota exceeded.", { requestId: paymentDetails.requestId });
+    const sessionStart = await apix.startRequestStateWithResult(validToken);
+    if (!sessionStart.started) {
+        const code = sessionStart.code || 'session_start_failed';
+        const message = sessionStart.message || 'Session start failed.';
+        switch (code) {
+            case 'session_request_in_progress':
+                sendError(res, "session_request_in_progress", { message, retryable: true, requestId: paymentDetails.requestId });
+                break;
+            case 'session_not_found':
+                sendError(res, "invalid_apix_session", { message, requestId: paymentDetails.requestId });
+                break;
+            case 'session_quota_exceeded':
+                sendError(res, "session_quota_exceeded", { message, requestId: paymentDetails.requestId });
+                break;
+            default:
+                sendError(res, code, { message, retryable: true, requestId: paymentDetails.requestId });
+                break;
+        }
         return;
     }
 

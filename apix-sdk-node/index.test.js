@@ -77,14 +77,21 @@ function testCommitOnlyTransitionsPendingToIdle() {
 }
 
 async function testAsyncSessionStateMethodsUseLocalStoreByDefault() {
-  const { middleware, token } = createMiddlewareWithSession(1);
+    const { middleware, token } = createMiddlewareWithSession(1);
 
-  assert.equal(await middleware.validateSessionState(token), true);
-  assert.equal(await middleware.startRequestState(token), true);
-  await middleware.rollbackRequestState(token);
-  assert.equal(await middleware.startRequestState(token), true);
-  await middleware.commitRequestState(token);
-  assert.equal(await middleware.validateSessionState(token), false);
+    assert.equal(await middleware.validateSessionState(token), true);
+    const startResult = await middleware.startRequestStateWithResult(token);
+    assert.equal(startResult.started, true);
+    assert.equal(startResult.code, 'session_started');
+
+    const duplicateResult = await middleware.startRequestStateWithResult(token);
+    assert.equal(duplicateResult.started, false);
+    assert.equal(duplicateResult.code, 'session_request_in_progress');
+
+    await middleware.rollbackRequestState(token);
+    assert.equal(await middleware.startRequestState(token), true);
+    await middleware.commitRequestState(token);
+    assert.equal(await middleware.validateSessionState(token), false);
 }
 
 async function run() {

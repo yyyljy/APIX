@@ -9,6 +9,12 @@ export interface SessionData {
     requestState: 'idle' | 'pending';
 }
 
+export interface SessionStartResult {
+    started: boolean;
+    code?: string;
+    message?: string;
+}
+
 export interface SessionStore {
     get(token: string): SessionData | undefined;
     set(token: string, value: SessionData): void;
@@ -73,6 +79,9 @@ export interface PaymentResponse {
     body: {
         error: string;
         message: string;
+        code?: string;
+        retryable?: boolean;
+        request_id?: string;
         details: {
             request_id: string;
             chain_id: number;
@@ -266,7 +275,7 @@ export class ApixMiddleware {
 
     async startRequestState(token: string): Promise<boolean> {
         if (!this.useCloudSessionState) {
-            return this.startRequest(token);
+            return this.startRequestWithResult(token).started;
         }
         if (!token) {
             return false;
@@ -276,6 +285,37 @@ export class ApixMiddleware {
             return !!payload?.started;
         } catch (_error) {
             return false;
+        }
+    }
+
+    async startRequestStateWithResult(token: string): Promise<SessionStartResult> {
+        if (!this.useCloudSessionState) {
+            return this.startRequestWithResult(token);
+        }
+        if (!token) {
+            return { started: false, code: 'session_not_found', message: 'Session token is missing.' };
+        }
+        try {
+            const payload = await this.postSessionAction('/v1/session/start', token);
+            return {
+                started: !!payload?.started,
+                code: typeof payload?.code === 'string'
+                    ? payload.code
+                    : (!!payload?.started ? 'session_started' : 'session_start_failed'),
+                message: typeof payload?.message === 'string'
+                    ? payload.message
+                    : (!!payload?.started ? 'Session start succeeded.' : 'Session start failed.')
+            };
+        } catch (_error) {
+            const remoteError = _error?.response?.data;
+            if (remoteError) {
+                return {
+                    started: false,
+                    code: remoteError.code || 'session_start_failed',
+                    message: remoteError.message || 'Session start failed.'
+                };
+            }
+            return { started: false, code: 'session_state_unavailable', message: 'Failed to update session state.' };
         }
     }
 
@@ -411,10 +451,24 @@ export class ApixMiddleware {
      * Starts a request and marks quota deduction as pending.
      */
     startRequest(token: string): boolean {
+        return this.startRequestWithResult(token).started;
+    }
+
+    private startRequestWithResult(token: string): SessionStartResult {
+        if (!token) {
+            return { started: false, code: 'session_not_found', message: 'Session token is missing.' };
+        }
         let started = false;
         const nextSession = this.updateSession(token, (session) => {
-            if (!session || session.remainingQuota <= 0) return session;
-            if (session.requestState === 'pending') return session;
+            if (!session) {
+                return session;
+            }
+            if (session.requestState === 'pending') {
+                return session;
+            }
+            if (session.remainingQuota <= 0) {
+                return session;
+            }
             started = true;
             return {
                 ...session,
@@ -422,7 +476,22 @@ export class ApixMiddleware {
                 remainingQuota: session.remainingQuota - 1
             };
         });
-        return started && !!nextSession && nextSession.requestState === 'pending';
+
+        if (!nextSession || !started) {
+            const current = this.sessionStore.get(token);
+            if (!current) {
+                return { started: false, code: 'session_not_found', message: 'Session not found.' };
+            }
+            if (current.requestState === 'pending') {
+                return { started: false, code: 'session_request_in_progress', message: 'Session request is already in progress.' };
+            }
+            if (current.remainingQuota <= 0) {
+                return { started: false, code: 'session_quota_exceeded', message: 'Session quota exceeded.' };
+            }
+            return { started: false, code: 'session_start_failed', message: 'Session start failed.' };
+        }
+
+        return { started: true, code: 'session_started', message: 'Session request started.' };
     }
 
     /**
@@ -479,7 +548,10 @@ export class ApixMiddleware {
             },
             body: {
                 error: 'Payment Required',
-                message: 'Payment Required. Please check WWW-Authenticate header or body for details.',
+                code: 'payment_required',
+                message: 'Payment required to access premium resource.',
+                retryable: false,
+                request_id: details.requestId,
                 details: {
                     request_id: details.requestId,
                     chain_id: details.chainId,
