@@ -1,0 +1,160 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "APIX L1 Event and Risk Schemas",
+  "type": "object",
+  "properties": {
+    "rawEvent": {
+      "$ref": "#/definitions/rawEvent"
+    },
+    "normalizedEvent": {
+      "$ref": "#/definitions/normalizedEvent"
+    },
+    "riskScore": {
+      "$ref": "#/definitions/riskScore"
+    },
+    "riskAlert": {
+      "$ref": "#/definitions/riskAlert"
+    },
+    "replayRequest": {
+      "$ref": "#/definitions/replayRequest"
+    },
+    "webhookEnvelope": {
+      "$ref": "#/definitions/webhookEnvelope"
+    }
+  },
+  "required": ["rawEvent", "normalizedEvent", "riskScore", "riskAlert", "replayRequest", "webhookEnvelope"],
+  "definitions": {
+    "rawEvent": {
+      "type": "object",
+      "required": [
+        "chain_id",
+        "block_number",
+        "block_hash",
+        "tx_hash",
+        "log_index",
+        "contract_address",
+        "topics",
+        "data",
+        "removed",
+        "captured_at",
+        "source",
+        "dedupe_key"
+      ],
+      "properties": {
+        "chain_id": { "type": "integer", "const": 402 },
+        "block_number": { "type": "integer", "minimum": 0 },
+        "block_hash": { "type": "string", "pattern": "^0x[0-9a-fA-F]{64}$" },
+        "tx_hash": { "type": "string", "pattern": "^0x[0-9a-fA-F]{64}$" },
+        "log_index": { "type": "integer", "minimum": 0 },
+        "contract_address": { "type": "string", "pattern": "^0x[0-9a-fA-F]{40}$" },
+        "topics": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^0x[0-9a-fA-F]{64}$" }
+        },
+        "data": { "type": "string" },
+        "removed": { "type": "boolean" },
+        "captured_at": { "type": "string", "format": "date-time" },
+        "source": { "type": "string", "enum": ["wss", "webhook"] },
+        "dedupe_key": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "normalizedEvent": {
+      "type": "object",
+      "required": [
+        "event_id",
+        "dedupe_key",
+        "chain_id",
+        "event_type",
+        "wallet",
+        "block_number",
+        "tx_hash",
+        "timestamp",
+        "status"
+      ],
+      "properties": {
+        "event_id": { "type": "string" },
+        "dedupe_key": { "type": "string" },
+        "chain_id": { "type": "integer", "const": 402 },
+        "event_type": { "type": "string" },
+        "wallet": { "type": "string", "pattern": "^0x[0-9a-fA-F]{40}$" },
+        "api_id": { "type": "string" },
+        "plan_id": { "type": "string" },
+        "amount": { "type": "string" },
+        "token_symbol": { "type": "string", "default": "APIX" },
+        "block_number": { "type": "integer" },
+        "tx_hash": { "type": "string", "pattern": "^0x[0-9a-fA-F]{64}$" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "status": { "type": "string", "enum": ["PENDING", "CONFIRMED", "REVERTED", "FAILED"] },
+        "risk_context": { "type": "object", "additionalProperties": true }
+      },
+      "additionalProperties": true
+    },
+    "riskSignal": {
+      "type": "object",
+      "required": ["name", "value", "weight"],
+      "properties": {
+        "name": { "type": "string" },
+        "value": { "type": "number" },
+        "weight": { "type": "number", "minimum": 0, "maximum": 1 },
+        "meta": { "type": "object", "additionalProperties": true }
+      }
+    },
+    "riskScore": {
+      "type": "object",
+      "required": ["wallet", "score", "grade", "window", "signals", "computed_at"],
+      "properties": {
+        "wallet": { "type": "string", "pattern": "^0x[0-9a-fA-F]{40}$" },
+        "score": { "type": "number", "minimum": 0, "maximum": 100 },
+        "grade": { "type": "string", "enum": ["NORMAL", "WARN", "SUSPECT", "CRITICAL"] },
+        "window": { "type": "string" },
+        "signals": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/riskSignal" }
+        },
+        "computed_at": { "type": "string", "format": "date-time" },
+        "ttl_sec": { "type": "integer", "minimum": 60 }
+      },
+      "additionalProperties": true
+    },
+    "riskAlert": {
+      "type": "object",
+      "required": ["alert_id", "wallet", "risk_score", "risk_grade", "status", "created_at"],
+      "properties": {
+        "alert_id": { "type": "string" },
+        "wallet": { "type": "string", "pattern": "^0x[0-9a-fA-F]{40}$" },
+        "risk_score": { "type": "number", "minimum": 0, "maximum": 100 },
+        "risk_grade": { "type": "string", "enum": ["NORMAL", "WARN", "SUSPECT", "CRITICAL"] },
+        "status": { "type": "string", "enum": ["OPEN", "ACKNOWLEDGED", "INVESTIGATING", "RESOLVED"] },
+        "rule_ids": { "type": "array", "items": { "type": "string" } },
+        "reasons": { "type": "array", "items": { "type": "string" } },
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" },
+        "assigned_to": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "replayRequest": {
+      "type": "object",
+      "required": ["from_block", "to_block"],
+      "properties": {
+        "from_block": { "type": "integer", "minimum": 0 },
+        "to_block": { "type": "integer", "minimum": 0 },
+        "reason": { "type": "string", "maxLength": 500 },
+        "dry_run": { "type": "boolean", "default": false }
+      }
+    },
+    "webhookEnvelope": {
+      "type": "object",
+      "required": ["source", "event_id", "event_type", "payload", "received_at"],
+      "properties": {
+        "source": { "type": "string", "example": "avacloud" },
+        "event_id": { "type": "string" },
+        "event_type": { "type": "string" },
+        "payload": { "type": "object", "additionalProperties": true },
+        "received_at": { "type": "string", "format": "date-time" },
+        "signature": { "type": "string" }
+      }
+    }
+  }
+}
