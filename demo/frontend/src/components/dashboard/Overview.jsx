@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { ethers } from 'ethers';
 import { fetchProxyResource, getErrorSnapshot, verifyPayment } from '../../utils/api';
+import { ensureWalletChain } from '../../utils/chain';
 import Sparkline from '../Sparkline';
 import {
     BarChart3,
@@ -72,6 +73,7 @@ export default function Overview() {
             addLog(`Initializing Payment: ${ethers.formatEther(amountWei)} AVAX`, "info");
 
             // 2. Send Transaction
+            await ensureWalletChain(details);
             const provider = new ethers.BrowserProvider(window.ethereum);
             const signer = await provider.getSigner();
 

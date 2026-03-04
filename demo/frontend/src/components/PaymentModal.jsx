@@ -3,7 +3,8 @@
 const PaymentModal = ({ isOpen, onClose, onConfirm, paymentDetails, isProcessing }) => {
     if (!isOpen) return null;
 
-    const { amount, currency, recipient, requestId } = paymentDetails;
+    const { amount, currency, recipient, requestId, chainId, network } = paymentDetails;
+    const networkLabel = network || (chainId ? `eip155:${chainId}` : 'eip155:43114');
 
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/55 p-4 backdrop-blur-sm">
@@ -47,7 +48,7 @@ const PaymentModal = ({ isOpen, onClose, onConfirm, paymentDetails, isProcessing
                         </div>
                         <div className="flex items-center justify-between gap-3">
                             <span className="text-slate-500">Network</span>
-                            <span className="font-semibold text-emerald-700">Avalanche C-Chain</span>
+                            <span className="font-semibold text-emerald-700">{networkLabel}</span>
                         </div>
                     </div>
 

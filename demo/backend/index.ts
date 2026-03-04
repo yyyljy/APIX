@@ -169,6 +169,14 @@ const apixConfig: {
     facilitatorUrl: string;
     jwtSecret?: string;
     sessionAuthorityUrl?: string;
+    rpcUrl?: string;
+    useCloudVerification?: boolean;
+    rpcTimeoutMs?: number;
+    rpcMaxRetries?: number;
+    defaultMinConfirmations?: number;
+    jwtTtlSeconds?: number;
+    jwtIssuer?: string;
+    jwtKid?: string;
     useCloudSessionState?: boolean;
 } = {
     facilitatorUrl
@@ -179,19 +187,106 @@ if (process.env.APIX_JWT_SECRET) {
 if (process.env.APIX_SESSION_AUTHORITY_URL) {
     apixConfig.sessionAuthorityUrl = process.env.APIX_SESSION_AUTHORITY_URL;
 }
+if (process.env.APIX_RPC_URL) {
+    apixConfig.rpcUrl = process.env.APIX_RPC_URL;
+}
+if (typeof process.env.APIX_USE_CLOUD_VERIFICATION === 'string') {
+    apixConfig.useCloudVerification = process.env.APIX_USE_CLOUD_VERIFICATION.trim().toLowerCase() === 'true';
+}
+if (process.env.APIX_RPC_TIMEOUT_MS) {
+    const parsed = Number.parseInt(process.env.APIX_RPC_TIMEOUT_MS, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+        apixConfig.rpcTimeoutMs = parsed;
+    }
+}
+if (process.env.APIX_RPC_MAX_RETRIES) {
+    const parsed = Number.parseInt(process.env.APIX_RPC_MAX_RETRIES, 10);
+    if (Number.isFinite(parsed) && parsed >= 0) {
+        apixConfig.rpcMaxRetries = parsed;
+    }
+}
+if (process.env.APIX_MIN_CONFIRMATIONS) {
+    const parsed = Number.parseInt(process.env.APIX_MIN_CONFIRMATIONS, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+        apixConfig.defaultMinConfirmations = parsed;
+    }
+}
+if (process.env.APIX_JWT_TTL_SECONDS) {
+    const parsed = Number.parseInt(process.env.APIX_JWT_TTL_SECONDS, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+        apixConfig.jwtTtlSeconds = parsed;
+    }
+}
+if (process.env.APIX_JWT_ISSUER) {
+    apixConfig.jwtIssuer = process.env.APIX_JWT_ISSUER;
+}
+if (process.env.APIX_JWT_KID) {
+    apixConfig.jwtKid = process.env.APIX_JWT_KID;
+}
 if (typeof process.env.APIX_USE_CLOUD_SESSION_STATE === 'string') {
     apixConfig.useCloudSessionState = process.env.APIX_USE_CLOUD_SESSION_STATE.trim().toLowerCase() === 'true';
 }
 const apix = new ApixMiddleware(apixConfig);
 
+const parsePositiveInt = (value: string | undefined, fallback: number): number => {
+    const trimmed = (value || '').trim();
+    const parsed = Number.parseInt(trimmed, 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+        return fallback;
+    }
+    return parsed;
+};
+
+const normalizeChainId = (value: string | number | undefined, fallback: number): number => {
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+        return Math.floor(value);
+    }
+    return parsePositiveInt(typeof value === 'string' ? value : '', fallback);
+};
+
+const parseAmountWei = (value: string | undefined, fallback: string): string => {
+    const trimmed = (value || '').trim();
+    return /^\d+$/.test(trimmed) ? trimmed : fallback;
+};
+
+const normalizeNetwork = (rawNetwork: string | undefined, chainId: number): string => {
+    const trimmed = (rawNetwork || '').trim();
+    if (!trimmed) {
+        return `eip155:${chainId}`;
+    }
+    if (/^eip155:\d+$/.test(trimmed)) {
+        return trimmed;
+    }
+    if (/^\d+$/.test(trimmed)) {
+        return `eip155:${normalizeChainId(trimmed, chainId)}`;
+    }
+    if (trimmed.startsWith('eip')) {
+        console.warn(`Invalid network format "${trimmed}", falling back to eip155:${chainId}.`);
+    }
+    return `eip155:${chainId}`;
+};
+
+const parseNetworkChainId = (network: string): number => {
+    const match = /^eip155:(\d+)$/.exec((network || '').trim());
+    if (!match) return 0;
+    return normalizeChainId(match[1], 0);
+};
+
+const configuredChainId = parsePositiveInt(process.env.APIX_CHAIN_ID, 43114);
+const configuredNetwork = normalizeNetwork(process.env.APIX_NETWORK, configuredChainId);
+const paymentChainId = parseNetworkChainId(configuredNetwork) || configuredChainId;
+if (paymentChainId !== configuredChainId) {
+    console.warn(`APIX_CHAIN_ID=${configuredChainId} and APIX_NETWORK=${configuredNetwork} mismatch; deriving chain_id from network as ${paymentChainId}.`);
+}
+
 const PAYMENT_PROFILE = {
-    chainId: 43114,
-    network: 'eip155:43114',
-    currency: 'AVAX',
-    amount: '0.100000000000000000',
-    amountWei: '100000000000000000',
-    recipient: '0x71C7656EC7ab88b098defB751B7401B5f6d8976F',
-    minConfirmations: 1
+    chainId: paymentChainId,
+    network: configuredNetwork,
+    currency: (process.env.APIX_PAYMENT_CURRENCY || 'AVAX').trim(),
+    amount: (process.env.APIX_PAYMENT_AMOUNT || '0.100000000000000000').trim(),
+    amountWei: parseAmountWei(process.env.APIX_PAYMENT_AMOUNT_WEI, '100000000000000000'),
+    recipient: (process.env.APIX_PAYMENT_RECIPIENT || '0x71C7656EC7ab88b098defB751B7401B5f6d8976F').trim(),
+    minConfirmations: parsePositiveInt(process.env.APIX_MIN_CONFIRMATIONS, 1)
 };
 
 const sendError = (

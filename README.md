@@ -113,11 +113,13 @@ This starts:
 - Demo frontend (Vite dev server)
 - Readiness checks on each service before reporting success.
 
-For real RPC verification (non-mock), provide an RPC URL:
+For real RPC verification (non-mock), use an Avalanche C-Chain RPC URL (mainnet example below):
 
 ```bash
 python execution/run_demo.py --rpc-url https://your-rpc-endpoint
 ```
+
+Defaults now point to Avalanche C-Chain (`chain_id: 43114`, `network: eip155:43114`) in project env templates.
 
 ### Option B: Run manually
 
@@ -129,6 +131,12 @@ set APIX_JWT_SECRET=change-this-secret
 set APIX_ENABLE_MOCK_VERIFY=true
 set APIX_VERIFICATION_STORE_PATH=.tmp/apix-verification-store.json
 set APIX_ALLOWED_ORIGINS=http://localhost:5173
+set APIX_CHAIN_ID=43114
+set APIX_NETWORK=eip155:43114
+set APIX_PAYMENT_CURRENCY=AVAX
+set APIX_PAYMENT_AMOUNT=0.100000000000000000
+set APIX_PAYMENT_AMOUNT_WEI=100000000000000000
+set APIX_PAYMENT_RECIPIENT=0x71C7656EC7ab88b098defB751B7401B5f6d8976F
 go run main.go
 ```
 
@@ -148,6 +156,8 @@ set APIX_FACILITATOR_URL=http://localhost:8080
 set APIX_SESSION_STORE_PATH=.tmp/apix-session-store.json
 set APIX_USE_CLOUD_SESSION_STATE=true
 set APIX_SESSION_AUTHORITY_URL=http://localhost:8080
+set APIX_CHAIN_ID=43114
+set APIX_NETWORK=eip155:43114
 # recommended: set explicit metrics token for stable access control
 set APIX_METRICS_TOKEN=<strong-random-token>
 npm install
@@ -159,6 +169,10 @@ npm start
 cd demo/frontend
 # optional: copy .env.example to .env and edit values
 set VITE_API_BASE_URL=http://localhost:3000
+set VITE_AVALANCHE_CHAIN_ID=43114
+set VITE_AVALANCHE_NETWORK_NAME=Avalanche C-Chain
+set VITE_AVALANCHE_RPC_URL=https://api.avax.network/ext/bc/C/rpc
+set VITE_AVALANCHE_BLOCK_EXPLORER=https://snowtrace.io
 npm install
 npm run dev
 ```

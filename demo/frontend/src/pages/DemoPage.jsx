@@ -1,11 +1,13 @@
 import React, { useState } from "react";
 import PaymentModal from "../components/PaymentModal";
+import { ethers } from "ethers";
 import {
   fetchProxyResource,
   fetchStripeProduct,
   getErrorSnapshot,
   verifyPayment,
 } from "../utils/api";
+import { ensureWalletChain, getPaymentNetwork } from "../utils/chain";
 import { createTransaction, updateTransaction } from "../utils/transactions";
 
 const DemoPage = () => {
@@ -141,26 +143,30 @@ const DemoPage = () => {
     setIsProcessingApix(true);
     await new Promise((resolve) => setTimeout(resolve, 2000));
 
-    const mockTxHash =
-      "0x" +
-      Array(64)
-        .fill(0)
-        .map(() => Math.floor(Math.random() * 16).toString(16))
-        .join("");
-
-    setApixTrace(
-      (prev) =>
-        `${prev}\n\n4. Payment sent\nTxHash: ${mockTxHash}\n5. Verifying...`,
-    );
-
     try {
-      const verifyRes = await verifyPayment(paymentDetails.requestId, mockTxHash);
+      const networkLabel = getPaymentNetwork(paymentDetails);
+      setApixTrace((prev) => `${prev}\n\n4. Ensuring wallet network: ${networkLabel}`);
+      await ensureWalletChain(paymentDetails);
+
+      const provider = new ethers.BrowserProvider(window.ethereum);
+      const signer = await provider.getSigner();
+      const txResponse = await signer.sendTransaction({
+        to: paymentDetails.recipient,
+        value: paymentDetails.amountWei,
+      });
+
+      setApixTrace(
+        (prev) =>
+          `${prev}\n\n4. Payment sent\nTxHash: ${txResponse.hash}\n5. Verifying...`,
+      );
+
+      const verifyRes = await verifyPayment(paymentDetails.requestId, txResponse.hash);
       const verifyData = await verifyRes.json();
       if (!verifyData?.success || !verifyData?.data?.access_token) {
         if (pendingApixTxnId) {
           updateTransaction(pendingApixTxnId, {
             status: "failed",
-            txHash: mockTxHash,
+            txHash: txResponse.hash,
             requestId: paymentDetails.requestId,
             message: `${verifyData?.error?.code || "verification_failed"}: ${verifyData?.error?.message || "Verification failed"}`
               + (verifyData?.error?.retryable ? " (retryable)" : ""),
@@ -182,7 +188,7 @@ const DemoPage = () => {
       if (pendingApixTxnId) {
         updateTransaction(pendingApixTxnId, {
           status: dataRes.status >= 200 && dataRes.status < 300 ? "success" : "failed",
-          txHash: mockTxHash,
+          txHash: txResponse.hash,
           requestId: paymentDetails.requestId,
           message: dataRes.status >= 200 && dataRes.status < 300
             ? "Payment and data access completed"
@@ -203,7 +209,7 @@ const DemoPage = () => {
       if (pendingApixTxnId) {
         updateTransaction(pendingApixTxnId, {
           status: "failed",
-          txHash: mockTxHash,
+          txHash: null,
           requestId: paymentDetails?.requestId || null,
           message: err.message || "Verification failed",
         });

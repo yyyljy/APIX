@@ -70,8 +70,18 @@ def run_demo():
     env.setdefault("APIX_SESSION_AUTHORITY_URL", "http://localhost:8080")
     env["APIX_ENABLE_MOCK_VERIFY"] = "true" if args.mock_verify else "false"
     env.setdefault("APIX_MIN_CONFIRMATIONS", "1")
+    env.setdefault("APIX_CHAIN_ID", "43114")
+    env.setdefault("APIX_NETWORK", "eip155:43114")
+    env.setdefault("APIX_PAYMENT_CURRENCY", "AVAX")
+    env.setdefault("APIX_PAYMENT_AMOUNT", "0.100000000000000000")
+    env.setdefault("APIX_PAYMENT_AMOUNT_WEI", "100000000000000000")
+    env.setdefault("APIX_PAYMENT_RECIPIENT", "0x71C7656EC7ab88b098defB751B7401B5f6d8976F")
     env["APIX_ALLOWED_ORIGINS"] = args.allowed_origins
     env.setdefault("VITE_API_BASE_URL", "http://localhost:3000")
+    env.setdefault("VITE_AVALANCHE_CHAIN_ID", "43114")
+    env.setdefault("VITE_AVALANCHE_NETWORK_NAME", "Avalanche C-Chain")
+    env.setdefault("VITE_AVALANCHE_RPC_URL", "https://api.avax.network/ext/bc/C/rpc")
+    env.setdefault("VITE_AVALANCHE_BLOCK_EXPLORER", "https://snowtrace.io")
     env.setdefault("APIX_SESSION_STORE_PATH", os.path.abspath(".tmp/apix-session-store.json"))
     env.setdefault("APIX_VERIFICATION_STORE_PATH", os.path.abspath(".tmp/apix-verification-store.json"))
 

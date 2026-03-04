@@ -24,6 +24,14 @@ export interface ApixConfig {
     apiKey?: string;
     facilitatorUrl?: string;
     jwtSecret?: string;
+    rpcUrl?: string;
+    rpcTimeoutMs?: number;
+    rpcMaxRetries?: number;
+    defaultMinConfirmations?: number;
+    useCloudVerification?: boolean;
+    jwtTtlSeconds?: number;
+    jwtIssuer?: string;
+    jwtKid?: string;
     sessionStorePath?: string;
     sessionStore?: SessionStore;
     sessionAuthorityUrl?: string;
@@ -88,10 +96,20 @@ export declare class ApixMiddleware {
     private config;
     private environment;
     private facilitatorUrl;
+    private useCloudVerification;
+    private rpcUrl;
+    private rpcTimeoutMs;
+    private rpcMaxRetries;
+    private defaultMinConfirmations;
+    private jwtTtlSeconds;
+    private jwtIssuer;
+    private jwtKid;
     private sessionAuthorityUrl;
     private useCloudSessionState;
     private sessionStore;
     private jwtSecret;
+    private verificationPairCache;
+    private verificationTxOwner;
     constructor(config?: ApixConfig);
     private updateSession;
     private postSessionAction;
@@ -100,6 +118,18 @@ export declare class ApixMiddleware {
     startRequestStateWithResult(token: string): Promise<SessionStartResult>;
     commitRequestState(token: string): Promise<void>;
     rollbackRequestState(token: string): Promise<void>;
+    private parseRequestId;
+    private parseNetworkChainId;
+    private parseEnvInt;
+    private parseHexToBigInt;
+    private rpcCall;
+    private isL1RetryableError;
+    private cleanupVerificationCache;
+    private getPairCacheKey;
+    private getCachedVerificationToken;
+    private setCachedVerificationToken;
+    private verifyTransactionOnChain;
+    private issueLocalSessionToken;
     /**
      * Verifies a payment transaction hash with Apix Cloud.
      * @param txHash The transaction hash from the client.
@@ -114,6 +144,7 @@ export declare class ApixMiddleware {
      * Starts a request and marks quota deduction as pending.
      */
     startRequest(token: string): boolean;
+    private startRequestWithResult;
     /**
      * Commits a pending deduction after successful request handling.
      */

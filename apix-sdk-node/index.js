@@ -154,12 +154,36 @@ class ApixMiddleware {
         this.config = config;
         this.environment = (process.env.APIX_ENV || 'development').trim().toLowerCase();
         this.facilitatorUrl = config.facilitatorUrl || 'http://localhost:8080';
+        this.rpcUrl = config.rpcUrl || process.env.APIX_RPC_URL || '';
+        this.rpcTimeoutMs = this.parseEnvInt(config.rpcTimeoutMs, process.env.APIX_RPC_TIMEOUT_MS, 8000);
+        if (this.rpcTimeoutMs <= 0) {
+            this.rpcTimeoutMs = 8000;
+        }
+        this.rpcMaxRetries = this.parseEnvInt(config.rpcMaxRetries, process.env.APIX_RPC_MAX_RETRIES, 2);
+        if (this.rpcMaxRetries < 0) {
+            this.rpcMaxRetries = 2;
+        }
+        this.defaultMinConfirmations = this.parseEnvInt(config.defaultMinConfirmations, process.env.APIX_MIN_CONFIRMATIONS, 1);
+        if (this.defaultMinConfirmations <= 0) {
+            this.defaultMinConfirmations = 1;
+        }
+        this.jwtTtlSeconds = this.parseEnvInt(config.jwtTtlSeconds, process.env.APIX_JWT_TTL_SECONDS, 60);
+        if (!Number.isFinite(this.jwtTtlSeconds) || this.jwtTtlSeconds <= 0) {
+            this.jwtTtlSeconds = 60;
+        }
+        this.jwtIssuer = (config.jwtIssuer || process.env.APIX_JWT_ISSUER || 'apix-sdk').trim();
+        this.jwtKid = (config.jwtKid || process.env.APIX_JWT_KID || 'v1').trim();
         this.sessionAuthorityUrl = config.sessionAuthorityUrl || process.env.APIX_SESSION_AUTHORITY_URL || this.facilitatorUrl;
         this.useCloudSessionState = config.useCloudSessionState
             ?? String(process.env.APIX_USE_CLOUD_SESSION_STATE || '').trim().toLowerCase() === 'true';
+        this.useCloudVerification = config.useCloudVerification
+            ?? String(process.env.APIX_USE_CLOUD_VERIFICATION || 'true').trim().toLowerCase() === 'true';
         this.jwtSecret = config.jwtSecret || process.env.APIX_JWT_SECRET || '';
         if (!this.jwtSecret) {
             throw new Error('Missing APIX_JWT_SECRET (or provide jwtSecret in ApixMiddleware config).');
+        }
+        if (!this.useCloudVerification && !this.rpcUrl) {
+            throw new Error('Missing APIX_RPC_URL (or set useCloudVerification=true to use facilitator verification).');
         }
         if (this.environment === 'production' && !this.useCloudSessionState) {
             throw new Error('Missing distributed session authority: set APIX_USE_CLOUD_SESSION_STATE=true in production.');
@@ -179,6 +203,8 @@ class ApixMiddleware {
                 ? new FileSessionStore(sessionStorePath)
                 : new InMemorySessionStore();
         }
+        this.verificationPairCache = new Map();
+        this.verificationTxOwner = new Map();
     }
     updateSession(token, updater) {
         const candidate = this.sessionStore;
@@ -250,8 +276,8 @@ class ApixMiddleware {
                     : (!!payload?.started ? 'Session start succeeded.' : 'Session start failed.')
             };
         }
-        catch (_error) {
-            const remoteError = _error?.response?.data;
+        catch (error) {
+            const remoteError = error?.response?.data;
             if (remoteError) {
                 return {
                     started: false,
@@ -282,6 +308,201 @@ class ApixMiddleware {
         }
         await this.postSessionAction('/v1/session/rollback', token);
     }
+    parseRequestId(token) {
+        return (token || '').trim();
+    }
+    parseNetworkChainId(network) {
+        const trimmed = (network || '').trim();
+        const parts = trimmed.split(':');
+        if (parts.length !== 2 || parts[0] !== 'eip155') {
+            throw new Error(`network must be CAIP-2 format eip155:<chain_id>, got ${network || '(empty)'}`);
+        }
+        const chainIdPart = parts[1];
+        if (!chainIdPart) {
+            throw new Error(`invalid chain id in network "${network}"`);
+        }
+        const chainId = Number.parseInt(chainIdPart, 10);
+        if (!Number.isFinite(chainId) || chainId <= 0) {
+            throw new Error(`invalid chain id in network "${network}"`);
+        }
+        return chainId;
+    }
+    parseEnvInt(configValue, envValue, fallback) {
+        if (typeof configValue === 'number' && Number.isFinite(configValue)) {
+            return configValue;
+        }
+        const source = configValue === undefined ? envValue : String(configValue);
+        const parsed = Number.parseInt((source || '').trim(), 10);
+        if (Number.isFinite(parsed)) {
+            return parsed;
+        }
+        return fallback;
+    }
+    parseHexToBigInt(value, label) {
+        const normalized = (value || '').trim().replace(/^0x/i, '');
+        if (!normalized) {
+            throw new Error(`failed to parse ${label}`);
+        }
+        try {
+            return BigInt(`0x${normalized}`);
+        }
+        catch (_error) {
+            throw new Error(`failed to parse ${label}`);
+        }
+    }
+    async rpcCall(method, params) {
+        const payload = {
+            jsonrpc: '2.0',
+            id: 1,
+            method,
+            params
+        };
+        let lastError = `rpc ${method} failed`;
+        const attempts = Math.max(0, this.rpcMaxRetries) + 1;
+        for (let attempt = 1; attempt <= attempts; attempt += 1) {
+            try {
+                const response = await axios_1.default.post(this.rpcUrl, payload, { timeout: this.rpcTimeoutMs });
+                if (!response) {
+                    throw new Error(`rpc ${method} returned no response`);
+                }
+                if (!response.data) {
+                    throw new Error(`rpc ${method} returned empty body`);
+                }
+                if (response.status >= 400) {
+                    throw new Error(`rpc http error status=${response.status}`);
+                }
+                if (response.data.error) {
+                    throw new Error(`rpc error code=${response.data.error.code} message=${response.data.error.message}`);
+                }
+                return response.data.result;
+            }
+            catch (error) {
+                lastError = error?.message || lastError;
+                if (attempt < attempts) {
+                    await new Promise((resolve) => setTimeout(resolve, attempt * 150));
+                    continue;
+                }
+                throw new Error(lastError);
+            }
+        }
+        throw new Error(lastError);
+    }
+    isL1RetryableError(message) {
+        const lowercase = message.toLowerCase();
+        const retryablePatterns = [
+            'failed to get transaction',
+            'failed to get receipt',
+            'failed to get chain id from rpc',
+            'failed to get latest block number',
+            'rpc http error',
+            'rpc error'
+        ];
+        return retryablePatterns.some((pattern) => lowercase.includes(pattern));
+    }
+    cleanupVerificationCache() {
+        const now = Date.now();
+        for (const [key, record] of this.verificationPairCache.entries()) {
+            if (record.expiresAt <= now) {
+                this.verificationPairCache.delete(key);
+                if (this.verificationTxOwner.get(record.txHash) === record.requestId) {
+                    this.verificationTxOwner.delete(record.txHash);
+                }
+            }
+        }
+    }
+    getPairCacheKey(requestId, txHash) {
+        const normalizedRequestId = requestId || '';
+        return `${normalizedRequestId}:${txHash}`;
+    }
+    getCachedVerificationToken(requestId, txHash) {
+        this.cleanupVerificationCache();
+        const key = this.getPairCacheKey(requestId, txHash);
+        const record = this.verificationPairCache.get(key);
+        if (!record || record.expiresAt <= Date.now()) {
+            this.verificationPairCache.delete(key);
+            return undefined;
+        }
+        return record.token;
+    }
+    setCachedVerificationToken(requestId, txHash, token, requestIdValue, expiresAt) {
+        const key = this.getPairCacheKey(requestId, txHash);
+        this.verificationPairCache.set(key, { token, expiresAt, requestId: requestIdValue, txHash });
+        if (requestIdValue) {
+            this.verificationTxOwner.set(txHash, requestIdValue);
+        }
+    }
+    async verifyTransactionOnChain(txHash, payment) {
+        if (!payment.network || !payment.recipient || !payment.amountWei) {
+            throw new Error('missing_payment_info');
+        }
+        const tx = await this.rpcCall('eth_getTransactionByHash', [txHash]);
+        if (!tx || !tx.hash || tx.hash.toLowerCase() !== txHash.toLowerCase()) {
+            throw new Error('transaction not found');
+        }
+        if (!tx.blockNumber || tx.blockNumber === '0x') {
+            throw new Error('transaction is not confirmed yet');
+        }
+        const receipt = await this.rpcCall('eth_getTransactionReceipt', [txHash]);
+        if (!receipt || !receipt.transactionHash) {
+            throw new Error('transaction receipt not found');
+        }
+        if (receipt.status !== '0x1') {
+            throw new Error('transaction execution failed');
+        }
+        const expectedRecipient = payment.recipient.toLowerCase().trim();
+        const actualRecipient = (tx.to || '').toLowerCase().trim();
+        if (expectedRecipient !== actualRecipient) {
+            throw new Error(`recipient mismatch expected=${expectedRecipient} actual=${actualRecipient}`);
+        }
+        const onChainValue = this.parseHexToBigInt(tx.value, 'transaction value');
+        const expectedValue = BigInt(payment.amountWei);
+        if (onChainValue < expectedValue) {
+            throw new Error(`insufficient payment expected=${payment.amountWei} actual=${onChainValue.toString()}`);
+        }
+        const expectedChainId = this.parseNetworkChainId(payment.network);
+        const rpcChainId = this.parseHexToBigInt(await this.rpcCall('eth_chainId', []), 'rpc chain id');
+        if (rpcChainId !== BigInt(expectedChainId)) {
+            throw new Error(`network mismatch expected_chain=${expectedChainId} rpc_chain=${rpcChainId.toString()}`);
+        }
+        if (payment.chainId && payment.chainId !== 0 && payment.chainId !== Number(rpcChainId)) {
+            throw new Error(`chain_id mismatch request_chain=${payment.chainId} network_chain=${expectedChainId}`);
+        }
+        const txBlock = this.parseHexToBigInt(tx.blockNumber, 'transaction block number');
+        const latestBlock = this.parseHexToBigInt(await this.rpcCall('eth_blockNumber', []), 'latest block number');
+        if (latestBlock < txBlock) {
+            throw new Error('latest block is behind transaction block');
+        }
+        const confirmations = Number(latestBlock - txBlock + BigInt(1));
+        const minConfirmations = payment.minConfirmations && payment.minConfirmations > 0
+            ? payment.minConfirmations
+            : this.defaultMinConfirmations;
+        if (confirmations < minConfirmations) {
+            throw new Error(`insufficient confirmations required=${minConfirmations} actual=${confirmations}`);
+        }
+    }
+    issueLocalSessionToken(payment, txHash) {
+        const signOptions = {
+            algorithm: 'HS256',
+            expiresIn: this.jwtTtlSeconds,
+            issuer: this.jwtIssuer,
+            header: {
+                kid: this.jwtKid
+            }
+        };
+        const token = jwt.sign({
+            tx_hash: txHash,
+            max_requests: 100,
+            request_id: payment.requestId,
+            network: payment.network,
+            recipient: payment.recipient,
+            amount_wei: payment.amountWei,
+            chain_id: payment.chainId,
+            currency: payment.currency,
+            iss: this.jwtIssuer
+        }, this.jwtSecret, signOptions);
+        const decoded = jwt.verify(token, this.jwtSecret, { issuer: this.jwtIssuer });
+        return { token, claims: decoded };
+    }
     /**
      * Verifies a payment transaction hash with Apix Cloud.
      * @param txHash The transaction hash from the client.
@@ -289,6 +510,96 @@ class ApixMiddleware {
     async verifyPayment(txHash, payment) {
         if (!txHash) {
             return { success: false, message: 'Transaction hash is missing.', code: 'missing_tx_hash', retryable: false };
+        }
+        const normalizedTxHash = txHash.trim();
+        if (!normalizedTxHash) {
+            return { success: false, message: 'Transaction hash is missing.', code: 'missing_tx_hash', retryable: false };
+        }
+        const requestId = this.parseRequestId(payment?.requestId);
+        if (!this.useCloudVerification) {
+            if (!payment) {
+                return {
+                    success: false,
+                    message: 'Payment details are required for direct on-chain verification.',
+                    code: 'invalid_request',
+                    retryable: false,
+                    requestId
+                };
+            }
+            try {
+                const cacheResult = this.getCachedVerificationToken(requestId, normalizedTxHash);
+                if (cacheResult) {
+                    return {
+                        success: true,
+                        token: cacheResult,
+                        message: 'Verification already processed',
+                        requestId
+                    };
+                }
+                const existingOwner = this.verificationTxOwner.get(normalizedTxHash);
+                if (existingOwner && existingOwner !== requestId) {
+                    return {
+                        success: false,
+                        message: 'Transaction hash already used by another request',
+                        code: 'tx_hash_already_used',
+                        retryable: false,
+                        requestId
+                    };
+                }
+                await this.verifyTransactionOnChain(normalizedTxHash, payment);
+                const { token, claims } = this.issueLocalSessionToken(payment, normalizedTxHash);
+                this.sessionStore.set(token, {
+                    claims,
+                    remainingQuota: claims.max_requests || 10,
+                    requestState: 'idle'
+                });
+                if (claims?.exp && typeof claims.exp === 'number') {
+                    this.setCachedVerificationToken(requestId, normalizedTxHash, token, requestId, claims.exp * 1000);
+                }
+                else {
+                    const fallbackExpiration = Date.now() + (this.jwtTtlSeconds * 1000);
+                    this.setCachedVerificationToken(requestId, normalizedTxHash, token, requestId, fallbackExpiration);
+                }
+                return {
+                    success: true,
+                    token,
+                    message: 'Verification successful',
+                    requestId
+                };
+            }
+            catch (error) {
+                const message = error?.message || 'Verification failed.';
+                const code = message === 'missing_payment_info'
+                    ? 'invalid_request'
+                    : message === 'transaction not found'
+                        ? 'verification_failed'
+                        : message === 'transaction is not confirmed yet'
+                            ? 'verification_failed'
+                            : message === 'transaction receipt not found'
+                                ? 'verification_failed'
+                                : message === 'transaction execution failed'
+                                    ? 'verification_failed'
+                                    : message.startsWith('recipient mismatch')
+                                        ? 'verification_failed'
+                                        : message.startsWith('insufficient payment')
+                                            ? 'verification_failed'
+                                            : message.startsWith('network mismatch')
+                                                ? 'verification_failed'
+                                                : message.startsWith('chain_id mismatch')
+                                                    ? 'verification_failed'
+                                                    : message.startsWith('latest block is behind')
+                                                        ? 'verification_failed'
+                                                        : message.startsWith('insufficient confirmations')
+                                                            ? 'verification_failed'
+                                                            : 'verification_failed';
+                return {
+                    success: false,
+                    message,
+                    code,
+                    retryable: this.isL1RetryableError(message),
+                    requestId
+                };
+            }
         }
         try {
             const requestOptions = payment?.requestId
@@ -389,8 +700,15 @@ class ApixMiddleware {
         }
         let started = false;
         const nextSession = this.updateSession(token, (session) => {
-            if (!session || session.requestState === 'pending' || session.remainingQuota <= 0)
+            if (!session) {
                 return session;
+            }
+            if (session.requestState === 'pending') {
+                return session;
+            }
+            if (session.remainingQuota <= 0) {
+                return session;
+            }
             started = true;
             return {
                 ...session,
