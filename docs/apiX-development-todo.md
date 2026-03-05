@@ -22,6 +22,11 @@ This file is derived from the codebase analysis and prioritizes executable devel
   - Frontend fallback maps include both styles inconsistently.
   - Files: [apix-sdk-node/index.ts](/home/jylee/omx/APIX/apix-sdk-node/index.ts), [demo/frontend/src/utils/api.js](/home/jylee/omx/APIX/demo/frontend/src/utils/api.js).
 
+- [ ] Finalize 402 protocol contract and client retry matrix.
+  - Define and lock status/body/header spec for `PAYMENT-REQUIRED` (including `Apix` proof header) and publish a shared schema.
+  - Ensure frontend handles all failure modes (`invalid`, `expired`, `already-used`, `chain-mismatch`) with deterministic UX and metrics.
+  - Files: [apix-sdk-node/index.ts](/home/jylee/omx/APIX/apix-sdk-node/index.ts), [demo/backend/index.ts](/home/jylee/omx/APIX/demo/backend/index.ts), [demo/frontend/src/utils/api.js](/home/jylee/omx/APIX/demo/frontend/src/utils/api.js).
+
 - [ ] Harden `FileSessionStore` lock/IO behavior for production.
   - Current implementation uses sync I/O and busy-wait in lock contention.
   - Files: [apix-sdk-node/index.ts](/home/jylee/omx/APIX/apix-sdk-node/index.ts) (`withLock`, `readSnapshot`, `writeSnapshot`).
@@ -29,6 +34,11 @@ This file is derived from the codebase analysis and prioritizes executable devel
 - [ ] Strengthen payment proof extraction and validation.
   - TxHash/JWT heuristic currently relies on format heuristics (`0x` + length check), with permissive parsing in `parsePaymentSignature`.
   - Files: [demo/backend/index.ts](/home/jylee/omx/APIX/demo/backend/index.ts:398), [demo/backend/index.ts](/home/jylee/omx/APIX/demo/backend/index.ts:470).
+
+- [ ] Add replay/ double-spend protection for `Apix` proof usage.
+  - Persist proof usage state (tx hash + service ID + path + expiry) and reject reused or stale proofs.
+  - Validate nonce/timestamp or block-depth constraints at verify time before granting access.
+  - File: [demo/backend/index.ts](/home/jylee/omx/APIX/demo/backend/index.ts), plus session/payment persistence layer.
 
 - [ ] Improve demo orchestrator lifecycle robustness.
   - Runtime currently terminates only top-level npm processes and may leave child process trees behind in some environments.
@@ -40,6 +50,11 @@ This file is derived from the codebase analysis and prioritizes executable devel
   - Backend test file currently covers only happy path and a small set of errors.
   - SDK tests cover only local/session unit logic; no on-chain verification failure cases are asserted.
   - Files: [demo/backend/index.test.ts](/home/jylee/omx/APIX/demo/backend/index.test.ts), [apix-sdk-node/index.test.js](/home/jylee/omx/APIX/apix-sdk-node/index.test.js).
+
+- [ ] Add integration tests for 402 end-to-end path.
+  - Include scenarios: no token (challenge), malformed `Apix` proof, expired/invalid chain id proof, already-used proof, and on-chain revert/refund states.
+  - Add test coverage for frontend retry path with mocked payment gateway responses.
+  - Files: [demo/backend/index.test.ts](/home/jylee/omx/APIX/demo/backend/index.test.ts), [demo/frontend/src/utils/api.js], [demo/frontend/src/pages](/home/jylee/omx/APIX/demo/frontend/src/pages).
 
 ## Acceptance checklist for each major ticket
 
