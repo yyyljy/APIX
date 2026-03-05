@@ -43,16 +43,6 @@ const ERROR_TONE_FALLBACK = {
     message: "Internal server error.",
     retryable: true,
   },
-  facilitator_unreachable: {
-    status: 503,
-    message: "Failed to connect to Apix Cloud.",
-    retryable: true,
-  },
-  invalid_cloud_token: {
-    status: 403,
-    message: "Invalid token from Cloud.",
-    retryable: false,
-  },
   payment_required: {
     status: 402,
     message: "Payment required to access this resource.",
@@ -152,12 +142,6 @@ export const ERROR_RESPONSE_SNAPSHOTS = {
     status: 403,
     code: "apix_verification_failed",
     message: ERROR_TONE_FALLBACK.apix_verification_failed.message,
-    retryable: false,
-  },
-  invalid_cloud_token: {
-    status: 403,
-    code: "invalid_cloud_token",
-    message: ERROR_TONE_FALLBACK.invalid_cloud_token.message,
     retryable: false,
   },
 };

@@ -4,12 +4,12 @@
 
 SDK + L1 중심으로 재구성한 현재 작업 상태를 정리한다.  
 판매자 백엔드는 기존처럼 존재하며, SDK는 백엔드 내부에서 동작한다.  
-Cloud 검증 경로(`Apix Cloud`)는 기본값을 유지하되, `useCloudVerification=false`로 설정 시 L1 직접 검증이 가능하도록 적용했다.
+클라우드 검증 경로 의존성을 제거했으며, 현재는 SDK가 L1 직접 검증 단일 경로로 동작한다.
 
 ## 2. 반영 완료 항목
 
 - SDK 설정/타입 확장
-  - `apix-sdk-node/index.ts`에 `ApixConfig` 확장 반영 (`rpcUrl`, `rpcTimeoutMs`, `rpcMaxRetries`, `defaultMinConfirmations`, `useCloudVerification`, `jwtTtlSeconds`, `jwtIssuer`, `jwtKid`).
+  - `apix-sdk-node/index.ts`에 `ApixConfig` 확장 반영 (`rpcUrl`, `rpcTimeoutMs`, `rpcMaxRetries`, `defaultMinConfirmations`, `jwtTtlSeconds`, `jwtIssuer`, `jwtKid`).
   - `ApixMiddleware`에 L1 직접 검증용 플래그/타임아웃/재시도/확인 수 파라미터 적용.
   - `docs/restructuring/client-sdk-l1-402.md`의 전제 및 흐름을 SDK 개발자 관점으로 정합화.
   - `.d.ts`/`index.js` 계열도 타입/컴파일 산출물 동기화.
@@ -27,9 +27,7 @@ Cloud 검증 경로(`Apix Cloud`)는 기본값을 유지하되, `useCloudVerific
 - **클라이언트**: 402 Challenge 응답 수신 후 `Authorization: Apix <tx_hash>` 재요청.
 - **판매자 백엔드 + SDK**:
   - 402 Challenge 생성/세션 시작/커밋/롤백은 기존 백엔드 라우팅 유지.
-  - `ApixMiddleware.verifyPayment`에서 모드 분기:
-    - 기본: Cloud 검증(`facilitatorUrl`의 `/v1/verify`)
-    - `useCloudVerification=false`: RPC 기반 L1 직접 검증 경로로 동작
+  - `ApixMiddleware.verifyPayment`는 단일 L1 직접 검증 경로로 통합되었고, 모든 외부 검증 연동 의존성이 제거되었다.
 - **Avalanche L1**
   - `eth_getTransactionByHash`, `eth_getTransactionReceipt`, `eth_chainId`, `eth_blockNumber` 기반으로 tx 존재성, 영수증 상태, 수신자/금액/체인/확인 수를 검증.
 

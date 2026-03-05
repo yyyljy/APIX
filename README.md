@@ -10,26 +10,21 @@ The project merges the **speed of Web2** with the **trust of Web3** to provide:
 
 To solve the friction between blockchain latency and high-frequency API performance, APIX introduces the **Verifiable Atomic Session (VAS)**:
 
-1. **Fast Entry (Performance) - Delegated Verification:** The SDK delegates blockchain verification to a stateless intermediary (Apix Cloud). Once verified, the SDK caches a short-lived session JWT to process subsequent requests with microsecond latency.
+1. **Fast Entry (Performance) - On-chain Verification:** The SDK verifies payment tx hash directly on Avalanche L1 and caches a short-lived session JWT to process subsequent requests with low latency.
 2. **Safe Exit (Trust) - Conditional Deduction:** Buyers pay upfront, but the session quota is only committed on a successful HTTP 200 OK response. If the server fails (e.g., 500), the quota rolls back, guaranteeing a "No Data, No Pay" atomic escrow.
 
-## Architecture: "Thin SDK, Fat Cloud"
+## Architecture: "SDK + L1 (3단계)"
 
 - **Apix SDK**: A thin traffic interceptor and policy enforcer installed on the seller's server (Node.js/Go/Python).
-- **Apix Cloud**: A stateless validator that handles blockchain interaction, manages nonces, and prevents replay attacks (Go).
+- **Apix SDK**: Directly validates tx hash against Avalanche L1 RPC and issues session JWT.
 - **Smart Contracts**: Handles settlement and on-chain event logging on Avalanche L1 (`ApixPaymentRouter`).
 
 ## Repository Structure
 
-- `apix-cloud/`
-  - Go facilitator service.
-  - Verifies transaction hash (mock mode or RPC mode) and issues JWT.
-  - Main endpoint: `POST /v1/verify`
-
 - `apix-sdk-node/`
   - Node SDK used by backend services.
   - Responsibilities:
-    - Verify payment via Apix Cloud
+    - Verify payment via direct L1 RPC
     - Validate session JWT
     - Track/consume per-session quota
     - Produce standardized `402` payment challenge response (`WWW-Authenticate`, `PAYMENT-REQUIRED`)
@@ -51,7 +46,7 @@ To solve the friction between blockchain latency and high-frequency API performa
 
 - `execution/`
   - Python scripts to orchestrate common tasks:
-    - `run_demo.py`: start cloud + backend + frontend
+    - `run_demo.py`: start backend + frontend
     - `build_sdk.py`: install/build SDK
 
 - `directives/`, `docs/`
@@ -63,14 +58,13 @@ To solve the friction between blockchain latency and high-frequency API performa
 2. Backend returns `402 Payment Required` with standard HTTP headers (`WWW-Authenticate: Apix realm="Apix Protected", request_id="<uuid>", ...`).
 3. Client performs payment (mocked wallet interaction in demo) and obtains tx hash.
 4. Client retries request with payment proof via header (`Authorization: Apix <tx_hash>`).
-5. SDK delegates verification by asking Apix Cloud to verify the tx hash.
-6. Cloud returns signed JWT session token and enforces idempotency (`request_id + tx_hash`) and replay protection.
-7. SDK caches session, validates expiry/quota, and marks session as `PENDING`.
-8. Protected resource is returned. If successful (200 OK), quota is visually committed; if failed (5xx), quota safely rolls back.
+5. SDK verifies the tx hash directly on L1 and issues signed session token with idempotency/replay checks.
+6. SDK validates expiry/quota, and marks session as `PENDING`.
+7. Protected resource is returned. If successful (200 OK), quota is visually committed; if failed (5xx), quota safely rolls back.
 
 ## Error Envelope
 
-Cloud and backend error responses expose shared machine-readable fields:
+Backend error responses expose shared machine-readable fields:
 
 - `code`
 - `message`
@@ -79,8 +73,8 @@ Cloud and backend error responses expose shared machine-readable fields:
 
 Backend responses additionally include an `error` summary string for UI-friendly handling.
 
-Use `X-Request-ID` to correlate logs between client, backend, and cloud during troubleshooting.
-Cloud and backend emit structured JSON logs with `request_id`, `status`, `code`, `outcome`, and `latency_ms`.
+Use `X-Request-ID` to correlate logs between client and backend during troubleshooting.
+Backend emits structured JSON logs with `request_id`, `status`, `code`, `outcome`, and `latency_ms`.
 
 ## Why This Matters
 
@@ -92,7 +86,6 @@ This POC validates a key product thesis:
 ## Local Run
 
 ### Prerequisites
-- Go (compatible with `go 1.23.x` in `apix-cloud/go.mod`)
 - Node.js + npm
 - Python 3
 
@@ -104,58 +97,32 @@ pip install -r execution/requirements.txt
 ### Option A: Run all services with orchestrator
 
 ```bash
-python execution/run_demo.py --mock-verify
+python execution/run_demo.py --rpc-url https://your-rpc-endpoint
 ```
 
 This starts:
-- Apix Cloud on `http://localhost:8080`
 - Demo backend on `http://localhost:3000`
 - Demo frontend (Vite dev server)
 - Readiness checks on each service before reporting success.
-
-For real RPC verification (non-mock), use an Avalanche C-Chain RPC URL (mainnet example below):
-
-```bash
-python execution/run_demo.py --rpc-url https://your-rpc-endpoint
-```
 
 Defaults now point to Avalanche C-Chain (`chain_id: 43114`, `network: eip155:43114`) in project env templates.
 
 ### Option B: Run manually
 
-1. Cloud
-```bash
-cd apix-cloud
-# optional: copy .env.example to .env and edit values
-set APIX_JWT_SECRET=change-this-secret
-set APIX_ENABLE_MOCK_VERIFY=true
-set APIX_VERIFICATION_STORE_PATH=.tmp/apix-verification-store.json
-set APIX_ALLOWED_ORIGINS=http://localhost:5173
-set APIX_CHAIN_ID=43114
-set APIX_NETWORK=eip155:43114
-set APIX_PAYMENT_CURRENCY=AVAX
-set APIX_PAYMENT_AMOUNT=0.100000000000000000
-set APIX_PAYMENT_AMOUNT_WEI=100000000000000000
-set APIX_PAYMENT_RECIPIENT=0x71C7656EC7ab88b098defB751B7401B5f6d8976F
-go run main.go
-```
-
-2. SDK build (if needed)
+1. SDK build (if needed)
 ```bash
 cd apix-sdk-node
 npm install
 npm run build
 ```
 
-3. Backend
+2. Backend
 ```bash
 cd demo/backend
 # optional: copy .env.example to .env and edit values
 set APIX_JWT_SECRET=change-this-secret
-set APIX_FACILITATOR_URL=http://localhost:8080
+set APIX_RPC_URL=https://your-rpc-endpoint
 set APIX_SESSION_STORE_PATH=.tmp/apix-session-store.json
-set APIX_USE_CLOUD_SESSION_STATE=true
-set APIX_SESSION_AUTHORITY_URL=http://localhost:8080
 set APIX_CHAIN_ID=43114
 set APIX_NETWORK=eip155:43114
 # recommended: set explicit metrics token for stable access control
@@ -164,7 +131,7 @@ npm install
 npm start
 ```
 
-4. Frontend
+3. Frontend
 ```bash
 cd demo/frontend
 # optional: copy .env.example to .env and edit values
@@ -179,11 +146,10 @@ npm run dev
 
 ## Current MVP Constraints
 
-- Orchestrator defaults to real verification mode and requires `--rpc-url`; mock mode is explicit via `--mock-verify`.
-- Quota/session and verification state can be persisted to local files for single-instance durability.
-- Multi-instance deployments require a shared, lock-safe verification store path (`APIX_VERIFICATION_STORE_PATH`) across cloud replicas.
-- In `APIX_ENV=production`, mock verification and wildcard CORS are rejected at startup.
-- In `APIX_ENV=production`, backend session state must use Cloud authority (`APIX_USE_CLOUD_SESSION_STATE=true`).
+- Orchestrator requires `--rpc-url` (or `APIX_RPC_URL`) because verification is always direct on L1.
+- Quota/session and verification state are persisted to local files for single-instance durability.
+- Multi-instance deployments require a shared, lock-safe session store path (`APIX_SESSION_STORE_PATH`).
+- In `APIX_ENV=production`, wildcard CORS is rejected at startup.
 - `/metrics` always requires Bearer auth; if `APIX_METRICS_TOKEN` is missing/placeholder, backend auto-generates an ephemeral token for that process.
 
 ## Next Product Steps

@@ -23,7 +23,6 @@ function createMiddlewareWithSession(quota = 2) {
   const sessionStore = createTestStore();
   const middleware = new ApixMiddleware({
     jwtSecret: secret,
-    facilitatorUrl: "http://localhost:8080",
     sessionStore,
   });
   const token = jwt.sign({ max_requests: quota }, secret, { expiresIn: "1h" });

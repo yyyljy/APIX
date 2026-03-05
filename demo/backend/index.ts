@@ -8,7 +8,6 @@ dotenv.config();
 
 const app = express();
 const port = 3000;
-const facilitatorUrl = process.env.APIX_FACILITATOR_URL || 'http://localhost:8080';
 const startedAtMs = Date.now();
 let metricsToken = (process.env.APIX_METRICS_TOKEN || '').trim();
 const allowedOriginsRaw = process.env.APIX_ALLOWED_ORIGINS || 'http://localhost:5173,http://127.0.0.1:5173';
@@ -69,19 +68,9 @@ const API_ERROR_DEFINITIONS: Record<string, ApiErrorDefinition> = {
         message: "Transaction hash already used by another request.",
         retryable: false
     },
-    invalid_cloud_token: {
-        status: 403,
-        message: "Invalid token from Cloud.",
-        retryable: false
-    },
     signing_error: {
         status: 500,
         message: "Internal server error.",
-        retryable: true
-    },
-    facilitator_unreachable: {
-        status: 503,
-        message: "Failed to connect to Apix Cloud.",
         retryable: true
     },
     metrics_unauthorized: {
@@ -166,32 +155,20 @@ app.use(express.json());
 
 // Initialize Apix SDK
 const apixConfig: {
-    facilitatorUrl: string;
     jwtSecret?: string;
-    sessionAuthorityUrl?: string;
     rpcUrl?: string;
-    useCloudVerification?: boolean;
     rpcTimeoutMs?: number;
     rpcMaxRetries?: number;
     defaultMinConfirmations?: number;
     jwtTtlSeconds?: number;
     jwtIssuer?: string;
     jwtKid?: string;
-    useCloudSessionState?: boolean;
-} = {
-    facilitatorUrl
-};
+} = {};
 if (process.env.APIX_JWT_SECRET) {
     apixConfig.jwtSecret = process.env.APIX_JWT_SECRET;
 }
-if (process.env.APIX_SESSION_AUTHORITY_URL) {
-    apixConfig.sessionAuthorityUrl = process.env.APIX_SESSION_AUTHORITY_URL;
-}
 if (process.env.APIX_RPC_URL) {
     apixConfig.rpcUrl = process.env.APIX_RPC_URL;
-}
-if (typeof process.env.APIX_USE_CLOUD_VERIFICATION === 'string') {
-    apixConfig.useCloudVerification = process.env.APIX_USE_CLOUD_VERIFICATION.trim().toLowerCase() === 'true';
 }
 if (process.env.APIX_RPC_TIMEOUT_MS) {
     const parsed = Number.parseInt(process.env.APIX_RPC_TIMEOUT_MS, 10);
@@ -222,9 +199,6 @@ if (process.env.APIX_JWT_ISSUER) {
 }
 if (process.env.APIX_JWT_KID) {
     apixConfig.jwtKid = process.env.APIX_JWT_KID;
-}
-if (typeof process.env.APIX_USE_CLOUD_SESSION_STATE === 'string') {
-    apixConfig.useCloudSessionState = process.env.APIX_USE_CLOUD_SESSION_STATE.trim().toLowerCase() === 'true';
 }
 const apix = new ApixMiddleware(apixConfig);
 

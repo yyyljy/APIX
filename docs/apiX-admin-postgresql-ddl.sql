@@ -1,5 +1,4 @@
 -- APIX Admin API / PostgreSQL schema (current service 기준)
--- - Service target: apix-cloud/internal/adminapi/service.go
 -- - Engine: PostgreSQL
 
 BEGIN;

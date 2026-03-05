@@ -25,7 +25,7 @@ function createSeededSessionStore(token: string): string {
 async function run() {
     process.env.NODE_ENV = 'test';
     process.env.APIX_JWT_SECRET = JWT_SECRET;
-    process.env.APIX_FACILITATOR_URL = 'http://127.0.0.1:65535';
+    process.env.APIX_RPC_URL = 'https://api.avax.network/ext/bc/C/rpc';
     process.env.APIX_METRICS_TOKEN = 'metrics-test-token';
 
     const proofToken = jwt.sign({

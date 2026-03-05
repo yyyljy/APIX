@@ -153,8 +153,7 @@ class ApixMiddleware {
     constructor(config = {}) {
         this.config = config;
         this.environment = (process.env.APIX_ENV || 'development').trim().toLowerCase();
-        this.facilitatorUrl = config.facilitatorUrl || 'http://localhost:8080';
-        this.rpcUrl = config.rpcUrl || process.env.APIX_RPC_URL || '';
+        this.rpcUrl = (config.rpcUrl || process.env.APIX_RPC_URL || '').trim();
         this.rpcTimeoutMs = this.parseEnvInt(config.rpcTimeoutMs, process.env.APIX_RPC_TIMEOUT_MS, 8000);
         if (this.rpcTimeoutMs <= 0) {
             this.rpcTimeoutMs = 8000;
@@ -173,25 +172,14 @@ class ApixMiddleware {
         }
         this.jwtIssuer = (config.jwtIssuer || process.env.APIX_JWT_ISSUER || 'apix-sdk').trim();
         this.jwtKid = (config.jwtKid || process.env.APIX_JWT_KID || 'v1').trim();
-        this.sessionAuthorityUrl = config.sessionAuthorityUrl || process.env.APIX_SESSION_AUTHORITY_URL || this.facilitatorUrl;
-        this.useCloudSessionState = config.useCloudSessionState
-            ?? String(process.env.APIX_USE_CLOUD_SESSION_STATE || '').trim().toLowerCase() === 'true';
-        this.useCloudVerification = config.useCloudVerification
-            ?? String(process.env.APIX_USE_CLOUD_VERIFICATION || 'true').trim().toLowerCase() === 'true';
         this.jwtSecret = config.jwtSecret || process.env.APIX_JWT_SECRET || '';
         if (!this.jwtSecret) {
             throw new Error('Missing APIX_JWT_SECRET (or provide jwtSecret in ApixMiddleware config).');
         }
-        if (!this.useCloudVerification && !this.rpcUrl) {
-            throw new Error('Missing APIX_RPC_URL (or set useCloudVerification=true to use facilitator verification).');
+        if (!this.rpcUrl) {
+            throw new Error('Missing APIX_RPC_URL for on-chain verification.');
         }
-        if (this.environment === 'production' && !this.useCloudSessionState) {
-            throw new Error('Missing distributed session authority: set APIX_USE_CLOUD_SESSION_STATE=true in production.');
-        }
-        if (this.useCloudSessionState) {
-            this.sessionStore = config.sessionStore || new InMemorySessionStore();
-        }
-        else if (config.sessionStore) {
+        if (config.sessionStore) {
             this.sessionStore = config.sessionStore;
         }
         else {
@@ -221,92 +209,24 @@ class ApixMiddleware {
         }
         return next;
     }
-    async postSessionAction(pathname, token) {
-        const response = await axios_1.default.post(`${this.sessionAuthorityUrl}${pathname}`, { token }, {
-            timeout: 5000
-        });
-        return response?.data || {};
-    }
     async validateSessionState(token) {
-        if (!this.useCloudSessionState) {
-            return this.validateSession(token);
-        }
-        if (!token) {
-            return false;
-        }
-        try {
-            const payload = await this.postSessionAction('/v1/session/validate', token);
-            return !!payload?.valid;
-        }
-        catch (_error) {
-            return false;
-        }
+        return this.validateSession(token);
     }
     async startRequestState(token) {
-        if (!this.useCloudSessionState) {
-            return this.startRequestWithResult(token).started;
-        }
-        if (!token) {
-            return false;
-        }
-        try {
-            const payload = await this.postSessionAction('/v1/session/start', token);
-            return !!payload?.started;
-        }
-        catch (_error) {
-            return false;
-        }
+        const result = await this.startRequestStateWithResult(token);
+        return result.started;
     }
     async startRequestStateWithResult(token) {
-        if (!this.useCloudSessionState) {
-            return this.startRequestWithResult(token);
-        }
         if (!token) {
             return { started: false, code: 'session_not_found', message: 'Session token is missing.' };
         }
-        try {
-            const payload = await this.postSessionAction('/v1/session/start', token);
-            return {
-                started: !!payload?.started,
-                code: typeof payload?.code === 'string'
-                    ? payload.code
-                    : (!!payload?.started ? 'session_started' : 'session_start_failed'),
-                message: typeof payload?.message === 'string'
-                    ? payload.message
-                    : (!!payload?.started ? 'Session start succeeded.' : 'Session start failed.')
-            };
-        }
-        catch (error) {
-            const remoteError = error?.response?.data;
-            if (remoteError) {
-                return {
-                    started: false,
-                    code: remoteError.code || 'session_start_failed',
-                    message: remoteError.message || 'Session start failed.'
-                };
-            }
-            return { started: false, code: 'session_state_unavailable', message: 'Failed to update session state.' };
-        }
+        return this.startRequestWithResult(token);
     }
     async commitRequestState(token) {
-        if (!this.useCloudSessionState) {
-            this.commitRequest(token);
-            return;
-        }
-        if (!token) {
-            return;
-        }
-        await this.postSessionAction('/v1/session/commit', token);
+        this.commitRequest(token);
     }
     async rollbackRequestState(token) {
-        if (!this.useCloudSessionState) {
-            this.rollbackRequest(token);
-            return;
-        }
-        if (!token) {
-            return;
-        }
-        await this.postSessionAction('/v1/session/rollback', token);
+        this.rollbackRequest(token);
     }
     parseRequestId(token) {
         return (token || '').trim();
@@ -504,7 +424,7 @@ class ApixMiddleware {
         return { token, claims: decoded };
     }
     /**
-     * Verifies a payment transaction hash with Apix Cloud.
+     * Verifies a payment transaction hash directly on-chain (Avalanche L1).
      * @param txHash The transaction hash from the client.
      */
     async verifyPayment(txHash, payment) {
@@ -516,154 +436,87 @@ class ApixMiddleware {
             return { success: false, message: 'Transaction hash is missing.', code: 'missing_tx_hash', retryable: false };
         }
         const requestId = this.parseRequestId(payment?.requestId);
-        if (!this.useCloudVerification) {
-            if (!payment) {
+        if (!payment) {
+            return {
+                success: false,
+                message: 'Payment details are required for on-chain verification.',
+                code: 'invalid_request',
+                retryable: false,
+                requestId
+            };
+        }
+        try {
+            const cacheResult = this.getCachedVerificationToken(requestId, normalizedTxHash);
+            if (cacheResult) {
+                return {
+                    success: true,
+                    token: cacheResult,
+                    message: 'Verification already processed',
+                    requestId
+                };
+            }
+            const existingOwner = this.verificationTxOwner.get(normalizedTxHash);
+            if (existingOwner && existingOwner !== requestId) {
                 return {
                     success: false,
-                    message: 'Payment details are required for direct on-chain verification.',
-                    code: 'invalid_request',
+                    message: 'Transaction hash already used by another request',
+                    code: 'tx_hash_already_used',
                     retryable: false,
                     requestId
                 };
             }
-            try {
-                const cacheResult = this.getCachedVerificationToken(requestId, normalizedTxHash);
-                if (cacheResult) {
-                    return {
-                        success: true,
-                        token: cacheResult,
-                        message: 'Verification already processed',
-                        requestId
-                    };
-                }
-                const existingOwner = this.verificationTxOwner.get(normalizedTxHash);
-                if (existingOwner && existingOwner !== requestId) {
-                    return {
-                        success: false,
-                        message: 'Transaction hash already used by another request',
-                        code: 'tx_hash_already_used',
-                        retryable: false,
-                        requestId
-                    };
-                }
-                await this.verifyTransactionOnChain(normalizedTxHash, payment);
-                const { token, claims } = this.issueLocalSessionToken(payment, normalizedTxHash);
-                this.sessionStore.set(token, {
-                    claims,
-                    remainingQuota: claims.max_requests || 10,
-                    requestState: 'idle'
-                });
-                if (claims?.exp && typeof claims.exp === 'number') {
-                    this.setCachedVerificationToken(requestId, normalizedTxHash, token, requestId, claims.exp * 1000);
-                }
-                else {
-                    const fallbackExpiration = Date.now() + (this.jwtTtlSeconds * 1000);
-                    this.setCachedVerificationToken(requestId, normalizedTxHash, token, requestId, fallbackExpiration);
-                }
-                return {
-                    success: true,
-                    token,
-                    message: 'Verification successful',
-                    requestId
-                };
+            await this.verifyTransactionOnChain(normalizedTxHash, payment);
+            const { token, claims } = this.issueLocalSessionToken(payment, normalizedTxHash);
+            this.sessionStore.set(token, {
+                claims,
+                remainingQuota: claims.max_requests || 10,
+                requestState: 'idle'
+            });
+            if (claims?.exp && typeof claims.exp === 'number') {
+                this.setCachedVerificationToken(requestId, normalizedTxHash, token, requestId, claims.exp * 1000);
             }
-            catch (error) {
-                const message = error?.message || 'Verification failed.';
-                const code = message === 'missing_payment_info'
-                    ? 'invalid_request'
-                    : message === 'transaction not found'
-                        ? 'verification_failed'
-                        : message === 'transaction is not confirmed yet'
-                            ? 'verification_failed'
-                            : message === 'transaction receipt not found'
-                                ? 'verification_failed'
-                                : message === 'transaction execution failed'
-                                    ? 'verification_failed'
-                                    : message.startsWith('recipient mismatch')
-                                        ? 'verification_failed'
-                                        : message.startsWith('insufficient payment')
-                                            ? 'verification_failed'
-                                            : message.startsWith('network mismatch')
-                                                ? 'verification_failed'
-                                                : message.startsWith('chain_id mismatch')
-                                                    ? 'verification_failed'
-                                                    : message.startsWith('latest block is behind')
-                                                        ? 'verification_failed'
-                                                        : message.startsWith('insufficient confirmations')
-                                                            ? 'verification_failed'
-                                                            : 'verification_failed';
-                return {
-                    success: false,
-                    message,
-                    code,
-                    retryable: this.isL1RetryableError(message),
-                    requestId
-                };
-            }
-        }
-        try {
-            const requestOptions = payment?.requestId
-                ? { headers: { 'X-Request-ID': payment.requestId } }
-                : {};
-            const response = await axios_1.default.post(`${this.facilitatorUrl}/v1/verify`, {
-                tx_hash: txHash,
-                request_id: payment?.requestId,
-                chain_id: payment?.chainId,
-                network: payment?.network,
-                recipient: payment?.recipient,
-                amount_wei: payment?.amountWei,
-                currency: payment?.currency,
-                min_confirmations: payment?.minConfirmations
-            }, requestOptions);
-            if (response.data && response.data.valid && response.data.token) {
-                const token = response.data.token;
-                // Decode and cache for per-session quota tracking.
-                try {
-                    const decoded = jwt.verify(token, this.jwtSecret);
-                    if (!this.useCloudSessionState) {
-                        this.sessionStore.set(token, {
-                            claims: decoded,
-                            remainingQuota: decoded.max_requests || 10,
-                            requestState: 'idle'
-                        });
-                    }
-                    return {
-                        success: true,
-                        token,
-                        message: response.data.message,
-                        requestId: response.data.request_id || response.headers?.['x-request-id']
-                    };
-                }
-                catch (jwtError) {
-                    console.error('JWT Verification failed:', jwtError);
-                    return { success: false, message: 'Invalid token from Cloud.', code: 'invalid_cloud_token', retryable: false };
-                }
+            else {
+                const fallbackExpiration = Date.now() + (this.jwtTtlSeconds * 1000);
+                this.setCachedVerificationToken(requestId, normalizedTxHash, token, requestId, fallbackExpiration);
             }
             return {
-                success: false,
-                message: response.data?.message || 'Verification failed.',
-                code: response.data?.code,
-                retryable: response.data?.retryable,
-                requestId: response.data?.request_id
+                success: true,
+                token,
+                message: 'Verification successful',
+                requestId
             };
         }
         catch (error) {
-            const remoteError = error?.response?.data;
-            if (remoteError) {
-                return {
-                    success: false,
-                    message: remoteError.message || 'Verification failed.',
-                    code: remoteError.code,
-                    retryable: remoteError.retryable,
-                    requestId: remoteError.request_id || error?.response?.headers?.['x-request-id']
-                };
-            }
-            console.error('Apix SDK Verification Error:', error.message);
+            const message = error?.message || 'Verification failed.';
+            const code = message === 'missing_payment_info'
+                ? 'invalid_request'
+                : message === 'transaction not found'
+                    ? 'verification_failed'
+                    : message === 'transaction is not confirmed yet'
+                        ? 'verification_failed'
+                        : message === 'transaction receipt not found'
+                            ? 'verification_failed'
+                            : message === 'transaction execution failed'
+                                ? 'verification_failed'
+                                : message.startsWith('recipient mismatch')
+                                    ? 'verification_failed'
+                                    : message.startsWith('insufficient payment')
+                                        ? 'verification_failed'
+                                        : message.startsWith('network mismatch')
+                                            ? 'verification_failed'
+                                            : message.startsWith('chain_id mismatch')
+                                                ? 'verification_failed'
+                                                : message.startsWith('latest block is behind')
+                                                    ? 'verification_failed'
+                                                    : message.startsWith('insufficient confirmations')
+                                                        ? 'verification_failed'
+                                                        : 'verification_failed';
             return {
                 success: false,
-                message: 'Failed to connect to Apix Cloud.',
-                code: 'facilitator_unreachable',
-                retryable: true
+                message,
+                code,
+                retryable: this.isL1RetryableError(message),
+                requestId
             };
         }
     }

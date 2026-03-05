@@ -40,13 +40,12 @@ def wait_for_http_ready(urls, timeout_seconds=30, label="service"):
 
 def run_demo():
     """
-    Orchestrates the startup of Apix Cloud, Demo Backend, and Demo Frontend.
+    Orchestrates the startup of Demo Backend and Demo Frontend.
     """
-    parser = argparse.ArgumentParser(description="Run APIX demo services (cloud/backend/frontend).")
-    parser.add_argument("--mock-verify", action="store_true", help="Enable mock chain verification for local demo flow.")
-    parser.add_argument("--rpc-url", default=os.environ.get("APIX_RPC_URL", "").strip(), help="EVM RPC URL used when mock verification is disabled.")
-    parser.add_argument("--jwt-secret", default=os.environ.get("APIX_JWT_SECRET", "").strip(), help="Shared JWT secret for cloud/backend.")
-    parser.add_argument("--allowed-origins", default=os.environ.get("APIX_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"), help="Comma-separated CORS allowlist for Apix Cloud.")
+    parser = argparse.ArgumentParser(description="Run APIX demo services (backend/frontend).")
+    parser.add_argument("--rpc-url", default=os.environ.get("APIX_RPC_URL", "").strip(), help="EVM RPC URL used for direct L1 verification.")
+    parser.add_argument("--jwt-secret", default=os.environ.get("APIX_JWT_SECRET", "").strip(), help="Shared JWT secret used by backend.")
+    parser.add_argument("--allowed-origins", default=os.environ.get("APIX_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"), help="Comma-separated CORS allowlist for backend.")
     parser.add_argument("--skip-frontend", action="store_true", help="Skip starting Vite frontend server.")
     parser.add_argument("--readiness-timeout", type=int, default=45, help="Seconds to wait for each service health check.")
     args = parser.parse_args()
@@ -66,9 +65,6 @@ def run_demo():
     env["APIX_METRICS_TOKEN"] = metrics_token
     env.setdefault("APIX_ENV", "development")
     env.setdefault("APIX_JWT_KID", "dev-v1")
-    env.setdefault("APIX_USE_CLOUD_SESSION_STATE", "true")
-    env.setdefault("APIX_SESSION_AUTHORITY_URL", "http://localhost:8080")
-    env["APIX_ENABLE_MOCK_VERIFY"] = "true" if args.mock_verify else "false"
     env.setdefault("APIX_MIN_CONFIRMATIONS", "1")
     env.setdefault("APIX_CHAIN_ID", "43114")
     env.setdefault("APIX_NETWORK", "eip155:43114")
@@ -85,14 +81,10 @@ def run_demo():
     env.setdefault("APIX_SESSION_STORE_PATH", os.path.abspath(".tmp/apix-session-store.json"))
     env.setdefault("APIX_VERIFICATION_STORE_PATH", os.path.abspath(".tmp/apix-verification-store.json"))
 
-    if not args.mock_verify:
-        if not args.rpc_url:
-            print("Error: real verification requires --rpc-url (or APIX_RPC_URL).")
-            print("Hint: use --mock-verify for local demonstration mode.")
-            sys.exit(1)
-        env["APIX_RPC_URL"] = args.rpc_url
-    elif args.rpc_url:
-        env["APIX_RPC_URL"] = args.rpc_url
+    if not args.rpc_url:
+        print("Error: verification requires --rpc-url (or APIX_RPC_URL).")
+        sys.exit(1)
+    env["APIX_RPC_URL"] = args.rpc_url
 
     npm_bin = resolve_npm_bin()
     if not npm_bin:
@@ -102,11 +94,6 @@ def run_demo():
     os.makedirs(os.path.abspath(".tmp"), exist_ok=True)
 
     try:
-        print("Starting Apix Cloud (Go)...")
-        p1 = subprocess.Popen(["go", "run", "main.go"], cwd=os.path.abspath("apix-cloud"), env=env)
-        processes.append(p1)
-        process_labels.append("apix-cloud")
-        
         print("Starting Demo Backend (Node)...")
         p2 = subprocess.Popen([npm_bin, "start"], cwd=os.path.abspath("demo/backend"), env=env)
         processes.append(p2)
@@ -118,11 +105,6 @@ def run_demo():
             processes.append(p3)
             process_labels.append("demo-frontend")
 
-        wait_for_http_ready(
-            ["http://127.0.0.1:8080/health", "http://localhost:8080/health"],
-            timeout_seconds=args.readiness_timeout,
-            label="apix-cloud"
-        )
         wait_for_http_ready(
             ["http://127.0.0.1:3000/health", "http://localhost:3000/health"],
             timeout_seconds=args.readiness_timeout,
@@ -150,11 +132,6 @@ def run_demo():
                     break
             else:
                 try:
-                    wait_for_http_ready(
-                        ["http://127.0.0.1:8080/health", "http://localhost:8080/health"],
-                        timeout_seconds=5,
-                        label="apix-cloud"
-                    )
                     wait_for_http_ready(
                         ["http://127.0.0.1:3000/health", "http://localhost:3000/health"],
                         timeout_seconds=5,

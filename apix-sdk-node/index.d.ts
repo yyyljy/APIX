@@ -22,20 +22,16 @@ export declare class InMemorySessionStore implements SessionStore {
 }
 export interface ApixConfig {
     apiKey?: string;
-    facilitatorUrl?: string;
     jwtSecret?: string;
     rpcUrl?: string;
     rpcTimeoutMs?: number;
     rpcMaxRetries?: number;
     defaultMinConfirmations?: number;
-    useCloudVerification?: boolean;
     jwtTtlSeconds?: number;
     jwtIssuer?: string;
     jwtKid?: string;
     sessionStorePath?: string;
     sessionStore?: SessionStore;
-    sessionAuthorityUrl?: string;
-    useCloudSessionState?: boolean;
 }
 export interface VerificationResult {
     success: boolean;
@@ -95,8 +91,6 @@ export declare class FileSessionStore implements SessionStore {
 export declare class ApixMiddleware {
     private config;
     private environment;
-    private facilitatorUrl;
-    private useCloudVerification;
     private rpcUrl;
     private rpcTimeoutMs;
     private rpcMaxRetries;
@@ -104,8 +98,6 @@ export declare class ApixMiddleware {
     private jwtTtlSeconds;
     private jwtIssuer;
     private jwtKid;
-    private sessionAuthorityUrl;
-    private useCloudSessionState;
     private sessionStore;
     private jwtSecret;
     private verificationPairCache;
@@ -131,7 +123,7 @@ export declare class ApixMiddleware {
     private verifyTransactionOnChain;
     private issueLocalSessionToken;
     /**
-     * Verifies a payment transaction hash with Apix Cloud.
+     * Verifies a payment transaction hash directly on-chain.
      * @param txHash The transaction hash from the client.
      */
     verifyPayment(txHash: string, payment?: PaymentDetails): Promise<VerificationResult>;
