@@ -8,6 +8,7 @@
 - **Pay-per-call monetization** is enforced with **Avalanche L1** using an **x402-style flow**.
 - **Fast for users, trustable for providers**: quick sessions, on-chain verification, and safe rollback when a request fails.
 - **Already deployed and in use on Avalanche Testnet via AvaCloud**: [https://explorer-test.avax.network/apix](https://explorer-test.avax.network/apix)
+- **Proposal planned**: We will submit ACP-402, a BJWT + ENTITLEMENT-TOKEN quota-access proposal (post-payment entitlement token) as part of the production hardening package: [apiX-402-bjwt-entitlement-token-proposal.md](/home/jylee/omx/APIX/docs/proposals/apiX-402-bjwt-entitlement-token-proposal.md).
 
 ## Why teams choose APIX
 
