@@ -13,7 +13,7 @@ To solve the friction between blockchain latency and high-frequency API performa
 1. **Fast Entry (Performance) - On-chain Verification:** The SDK verifies payment tx hash directly on Avalanche L1 and caches a short-lived session JWT to process subsequent requests with low latency.
 2. **Safe Exit (Trust) - Conditional Deduction:** Buyers pay upfront, but the session quota is only committed on a successful HTTP 200 OK response. If the server fails (e.g., 500), the quota rolls back, guaranteeing a "No Data, No Pay" atomic escrow.
 
-## Architecture: "SDK + L1 (3단계)"
+## Architecture: "SDK + L1 (3-step)"
 
 - **Apix SDK**: A thin traffic interceptor and policy enforcer installed on the seller's server (Node.js/Go/Python).
 - **Apix SDK**: Directly validates tx hash against Avalanche L1 RPC and issues session JWT.
