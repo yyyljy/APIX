@@ -10,6 +10,7 @@ import {
 import { ensureWalletChain, getPaymentNetwork, getPreferredWalletProvider } from "../utils/chain";
 import { createTransaction, updateTransaction } from "../utils/transactions";
 
+// Demo page controller for Stripe and APIX payment demonstration flows.
 const DemoPage = () => {
   const [stripeResult, setStripeResult] = useState(null);
   const [apixTrace, setApixTrace] = useState(null);
@@ -40,6 +41,7 @@ const DemoPage = () => {
     }, 5000);
   };
 
+  // Parse a timeout-safe positive integer with fallback when parsing fails.
   const normalizePositiveInt = (value, fallback) => {
     const parsed = Number.parseInt(String(value).trim(), 10);
     if (!Number.isFinite(parsed) || parsed <= 0) {
@@ -48,6 +50,7 @@ const DemoPage = () => {
     return parsed;
   };
 
+  // Wrap async work with a timeout so popup dismissals cannot hang the payment flow.
   const runWithTimeout = (promise, timeoutMs, timeoutMessage) => {
     const ms = normalizePositiveInt(timeoutMs, 30000);
     return new Promise((resolve, reject) => {
@@ -66,6 +69,7 @@ const DemoPage = () => {
     });
   };
 
+  // Mark flow failure and finalize UI + transaction state in one place.
   const markFlowFailed = (flowId, message = "Payment failed") => {
     if (flowId !== paymentFlowRef.current) {
       return;
@@ -112,10 +116,12 @@ const DemoPage = () => {
     return lines.join("\n") || "No summary fields";
   };
 
+  // Open Stripe mock modal.
   const handleStripeClick = () => {
     setShowStripeModal(true);
   };
 
+  // Simulate Stripe completion and then fetch protected data via Stripe route.
   const confirmStripePayment = async () => {
     setIsProcessingStripe(true);
     await new Promise((resolve) => setTimeout(resolve, 1500));
@@ -124,6 +130,7 @@ const DemoPage = () => {
     callStripeApi();
   };
 
+  // Call Stripe-like sample API and persist transaction status.
   const callStripeApi = async () => {
     try {
       const res = await fetchStripeProduct();
@@ -152,6 +159,7 @@ const DemoPage = () => {
     }
   };
 
+  // Start APIX flow and handle 402 challenge by showing the selected mode.
   const initiateApixFlow = async () => {
     try {
       setApixRaw(null);
@@ -223,6 +231,7 @@ const DemoPage = () => {
     }
   };
 
+  // Execute wallet chain setup + send tx for human payment flow.
   const confirmApixPayment = async () => {
     if (!paymentDetails) return;
     if (isProcessingApix) return;
@@ -269,6 +278,7 @@ const DemoPage = () => {
     }
   };
 
+  // Verify tx hash or existing hash payload to obtain APIX access token.
   const verifyApixTransaction = async (txHash, flowId = paymentFlowRef.current) => {
     if (!paymentDetails || flowId !== paymentFlowRef.current) return;
 
@@ -349,6 +359,7 @@ const DemoPage = () => {
     }
   };
 
+  // Cancel current payment flow and update status immediately.
   const cancelApixPayment = () => {
     paymentFlowRef.current += 1;
     const currentTxnId = pendingApixTxnId;
@@ -378,6 +389,7 @@ const DemoPage = () => {
         : "bg-slate-900";
 
   const verifyTxFromAgent = async () => {
+    // Verify tx hash submitted manually in agent mode.
     if (!paymentDetails || !agentTxHash) return;
     await verifyApixTransaction(agentTxHash);
   };

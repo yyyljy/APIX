@@ -5,8 +5,10 @@ const FALLBACK_NETWORK_NAME = import.meta.env.VITE_AVALANCHE_NETWORK_NAME || 'Av
 const FALLBACK_BLOCK_EXPLORER = import.meta.env.VITE_AVALANCHE_BLOCK_EXPLORER || 'https://snowtrace.io';
 const PREFERRED_WALLET = String((import.meta.env.VITE_PREFERRED_WALLET || 'core')).trim().toLowerCase();
 
-const sanitizeProviderRequestName = (value) => String(value || '').trim().toLowerCase();
+// Normalize provider names into a lower-case trimmed string.
+const sanitizeProviderRequestName = (value) => String(value || "").trim().toLowerCase();
 
+// Return available wallet providers detected from injected browser object.
 const getWalletProviderCandidates = () => {
     const ethereum = globalThis?.window?.ethereum;
     if (!ethereum || typeof ethereum.request !== 'function') {
@@ -24,6 +26,7 @@ const getWalletProviderCandidates = () => {
     return [ethereum];
 };
 
+// Detect Core wallet markers from injected provider metadata.
 const isCoreWallet = (provider) => {
     if (!provider || typeof provider !== 'object') {
         return false;
@@ -38,8 +41,10 @@ const isCoreWallet = (provider) => {
     return name.includes('core') || name.includes('avalanche core') || name.includes('avalanche wallet');
 };
 
+// Detect MetaMask provider via standard isMetaMask flag.
 const isMetaMaskWallet = (provider) => provider?.isMetaMask === true;
 
+// Sort providers by preferred wallet config while keeping deterministic fallback order.
 export const getOrderedWalletProviders = () => {
     const providers = getWalletProviderCandidates();
     if (providers.length <= 1) {
@@ -99,6 +104,7 @@ export const getPreferredWalletProvider = () => {
     return { provider: providers[0], source: 'fallback' };
 };
 
+// Normalize chain id into positive integer.
 const normalizeNumericChainId = (value, fallback = FALLBACK_CHAIN_ID) => {
     if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
         return Math.floor(value);
@@ -124,6 +130,7 @@ const toHexChainId = (chainId) => {
     return `0x${normalized.toString(16)}`;
 };
 
+// Resolve payment chain id with fallback to configured defaults.
 export const getPaymentChainId = (details) => {
     if (!details) {
         return FALLBACK_CHAIN_ID;
@@ -143,6 +150,7 @@ export const getPaymentNetwork = (details) => {
     return `eip155:${chainId}`;
 };
 
+// Ensure wallet is connected and on the expected chain for payment.
 export const ensureWalletChain = async (details, provider = null) => {
     const selectedProvider = provider || getPreferredWalletProvider().provider;
     const chainId = getPaymentChainId(details);
