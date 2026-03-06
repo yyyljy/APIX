@@ -4,6 +4,7 @@ const BACKEND_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:3000"
 const CLIENT_TYPE_HEADER = "X-APIX-CLIENT-TYPE";
 const DEFAULT_CLIENT_TYPE = "human";
 
+// buildHeaders: helper function.
 const buildHeaders = (extra = {}, clientType = DEFAULT_CLIENT_TYPE) => ({
     ...extra,
     [CLIENT_TYPE_HEADER]: clientType
@@ -97,6 +98,7 @@ const ERROR_TONE_FALLBACK = {
   },
 };
 
+// normalizeErrorPayload: helper function.
 const normalizeErrorPayload = (raw, status, override = {}) => {
   const code = override.code || raw?.code || (status === 402 ? "payment_required" : "request_failed");
   const tone = ERROR_TONE_FALLBACK[code] || {
@@ -153,6 +155,7 @@ export const ERROR_RESPONSE_SNAPSHOTS = {
   },
 };
 
+// getErrorSnapshot: helper function.
 export const getErrorSnapshot = (code, extras = {}) => {
   const base = ERROR_RESPONSE_SNAPSHOTS[code] || ERROR_RESPONSE_SNAPSHOTS.payment_required;
   return {
@@ -161,12 +164,14 @@ export const getErrorSnapshot = (code, extras = {}) => {
   };
 };
 
+// makeResponse: helper function.
 const makeResponse = (status, payload) => ({
   status,
   ok: status >= 200 && status < 300,
   json: async () => payload,
 });
 
+// networkErrorResponse: helper function.
 const networkErrorResponse = (message) =>
   makeResponse(500, {
     success: false,
@@ -175,6 +180,7 @@ const networkErrorResponse = (message) =>
     retryable: true,
   });
 
+// loginUser: helper function.
 export const loginUser = async (_walletAddress) => {
   // Legacy dashboard expects `json().success`; use health as lightweight liveness/auth placeholder.
   try {
@@ -190,6 +196,7 @@ export const loginUser = async (_walletAddress) => {
   }
 };
 
+// fetchProxyResource: helper function.
 export const fetchProxyResource = async (_listingId, token = null, clientType = DEFAULT_CLIENT_TYPE) => {
   const headers = {};
   if (token) {
@@ -203,6 +210,8 @@ export const fetchProxyResource = async (_listingId, token = null, clientType = 
     });
 
     const body = await res.json();
+
+
 
     if (res.status === 200) {
       return makeResponse(res.status, {
@@ -228,6 +237,7 @@ export const fetchProxyResource = async (_listingId, token = null, clientType = 
   }
 };
 
+// verifyPayment: helper function.
 export const verifyPayment = async (requestId, txHash, clientType = DEFAULT_CLIENT_TYPE) => {
   try {
     const res = await fetch(`${BACKEND_URL}/apix-product`, {
@@ -240,6 +250,8 @@ export const verifyPayment = async (requestId, txHash, clientType = DEFAULT_CLIE
     });
 
     const body = await res.json();
+
+
 
     if (res.status === 200) {
       return makeResponse(res.status, {
@@ -263,14 +275,17 @@ export const verifyPayment = async (requestId, txHash, clientType = DEFAULT_CLIE
   }
 };
 
+// fetchHealth: helper function.
 export const fetchHealth = async () => {
   return fetch(`${BACKEND_URL}/health`);
 };
 
+// fetchMetrics: helper function.
 export const fetchMetrics = async () => {
   return fetch(`${BACKEND_URL}/metrics`);
 };
 
+// fetchStripeProduct: helper function.
 export const fetchStripeProduct = async () => {
   try {
     const res = await fetch(`${BACKEND_URL}/stripe-product`, {

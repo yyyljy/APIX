@@ -29,7 +29,8 @@ export default function Overview() {
     const [accessToken, setAccessToken] = useState(null);
 
     // X402 Logic specific to this view
-    const handlePurchaseAccess = async () => {
+// handlePurchaseAccess: helper function.
+const handlePurchaseAccess = async () => {
         setLoading(true);
         setResourceData(null);
         addLog("Requesting Restricted Resource...", "info");
@@ -38,6 +39,8 @@ export default function Overview() {
             // 1. Trigger 402
             const response = await fetchProxyResource("listing_001", accessToken);
             const data = await response.json();
+
+
 
             if (response.status === 200) {
                 setResourceData(data.data);
@@ -61,6 +64,7 @@ export default function Overview() {
         }
     };
 
+// handlePayment: helper function.
     const handlePayment = async (details) => {
         if (!account) {
             addLog("Please connect wallet first!", "error");
@@ -92,6 +96,8 @@ export default function Overview() {
             addLog("Verifying payment...", "info");
             const verifyRes = await verifyPayment(request_id, txResponse.hash);
             const verifyData = await verifyRes.json();
+
+
 
             if (verifyData.success) {
                 setAccessToken(verifyData.data.access_token);
@@ -314,6 +320,7 @@ export default function Overview() {
     );
 }
 
+// StatCard: helper function.
 function StatCard({ title, value, change, trend, icon, color }) {
     return (
         <div className="card hover:-translate-y-1 transition-transform">

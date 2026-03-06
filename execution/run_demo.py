@@ -8,6 +8,7 @@ import secrets
 import urllib.request
 import urllib.error
 
+# read_env_secret_file: helper function.
 def read_env_secret_file(path: str, label: str) -> str:
     if not path:
         return '';
@@ -22,6 +23,12 @@ def read_env_secret_file(path: str, label: str) -> str:
         raise RuntimeError(f"failed to read {label} file: {error}")
     raise RuntimeError(f"{label} file is empty: {path}")
 
+
+# load_env_file: helper function.
+
+# load_env_file: helper function.
+
+# load_env_file: helper function.
 
 def load_env_file(path: str, env: dict) -> None:
     if not path:
@@ -64,6 +71,7 @@ def load_env_file(path: str, env: dict) -> None:
     except Exception as error:
         raise RuntimeError(f"failed to read env file {path}: {error}")
 
+# resolve_verification_rpc_url: helper function.
 def resolve_verification_rpc_url(env: dict, cli_file: str) -> str:
     if cli_file.strip():
         return read_env_secret_file(cli_file, "APIX_VERIFICATION_RPC_URL")
@@ -78,6 +86,7 @@ def resolve_verification_rpc_url(env: dict, cli_file: str) -> str:
 
     return ""
 
+# resolve_npm_bin: helper function.
 def resolve_npm_bin():
     candidates = ["npm.cmd", "npm"] if os.name == "nt" else ["npm", "npm.cmd"]
     for candidate in candidates:
@@ -85,6 +94,12 @@ def resolve_npm_bin():
             return candidate
     return None
 
+
+# ensure_frontend_ready: helper function.
+
+# ensure_frontend_ready: helper function.
+
+# ensure_frontend_ready: helper function.
 
 def ensure_frontend_ready(cwd: str, npm_bin: str, env: dict) -> None:
     candidates = [
@@ -103,6 +118,12 @@ def ensure_frontend_ready(cwd: str, npm_bin: str, env: dict) -> None:
     )
 
 
+# ensure_backend_ready: helper function.
+
+# ensure_backend_ready: helper function.
+
+# ensure_backend_ready: helper function.
+
 def ensure_backend_ready(cwd: str, npm_bin: str, env: dict) -> None:
     candidates = [
         os.path.join(cwd, "node_modules", ".bin", "tsx"),
@@ -119,6 +140,7 @@ def ensure_backend_ready(cwd: str, npm_bin: str, env: dict) -> None:
         check=True
     )
 
+# wait_for_http_ready: helper function.
 def wait_for_http_ready(urls, timeout_seconds=30, label="service"):
     if isinstance(urls, str):
         urls = [urls]
@@ -142,6 +164,7 @@ def wait_for_http_ready(urls, timeout_seconds=30, label="service"):
     ) or "unknown error"
     raise RuntimeError(f"{label} failed readiness check: {formatted_errors}")
 
+# run_demo: helper function.
 def run_demo():
     """
     Orchestrates the startup of Demo Backend and Demo Frontend.

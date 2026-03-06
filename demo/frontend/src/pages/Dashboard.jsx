@@ -21,10 +21,12 @@ export default function DashboardLayout() {
     const [account, setAccount] = useState(null);
     const [logs, setLogs] = useState([]);
 
+// addLog: helper function.
     const addLog = (msg, type = 'info') => {
         setLogs(prev => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev]);
     };
 
+// connectWallet: helper function.
     const connectWallet = async () => {
         if (!window.ethereum) {
             addLog("Metamask not found!", "error");
@@ -39,6 +41,8 @@ export default function DashboardLayout() {
             // Backend Login
             const loginRes = await loginUser(accounts[0]);
             const loginData = await loginRes.json();
+
+
 
             if (loginData.success) {
                 addLog("Backend Session Established", "success");
@@ -157,6 +161,7 @@ export default function DashboardLayout() {
 }
 
 // Subcomponents
+// NavItem: helper function.
 function NavItem({ to, icon, label, end = false }) {
     return (
         <NavLink
@@ -179,6 +184,7 @@ function NavItem({ to, icon, label, end = false }) {
     );
 }
 
+// StatCard: helper function.
 function StatCard({ title, value, change, trend, icon, color }) {
     return (
         <div className="card hover:-translate-y-1 transition-transform">

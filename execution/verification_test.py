@@ -3,6 +3,7 @@ import sys
 
 BASE_URL = "http://localhost:3000"
 
+# test_402_response: helper function.
 def test_402_response():
     print("Testing 402 Response...")
     try:
@@ -27,6 +28,7 @@ def test_402_response():
         print(f"Error connecting to backend: {e}")
         return False
 
+# test_200_success: helper function.
 def test_200_success():
     print("Testing 200 Success flow...")
     

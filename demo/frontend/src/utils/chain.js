@@ -6,14 +6,18 @@ const FALLBACK_BLOCK_EXPLORER = import.meta.env.VITE_AVALANCHE_BLOCK_EXPLORER ||
 const PREFERRED_WALLET = String((import.meta.env.VITE_PREFERRED_WALLET || 'core')).trim().toLowerCase();
 
 // Normalize provider names into a lower-case trimmed string.
+// sanitizeProviderRequestName: helper function.
 const sanitizeProviderRequestName = (value) => String(value || "").trim().toLowerCase();
 
 // Return available wallet providers detected from injected browser object.
+// getWalletProviderCandidates: helper function.
 const getWalletProviderCandidates = () => {
     const ethereum = globalThis?.window?.ethereum;
     if (!ethereum || typeof ethereum.request !== 'function') {
         return [];
     }
+
+
 
     if (Array.isArray(ethereum.providers) && ethereum.providers.length > 0) {
         return ethereum.providers
@@ -27,10 +31,13 @@ const getWalletProviderCandidates = () => {
 };
 
 // Detect Core wallet markers from injected provider metadata.
+// isCoreWallet: helper function.
 const isCoreWallet = (provider) => {
     if (!provider || typeof provider !== 'object') {
         return false;
     }
+
+
 
     if (provider.isCore || provider.isCoreWallet || provider.isAvalanche) {
         return true;
@@ -42,9 +49,11 @@ const isCoreWallet = (provider) => {
 };
 
 // Detect MetaMask provider via standard isMetaMask flag.
+// isMetaMaskWallet: helper function.
 const isMetaMaskWallet = (provider) => provider?.isMetaMask === true;
 
 // Sort providers by preferred wallet config while keeping deterministic fallback order.
+// getOrderedWalletProviders: helper function.
 export const getOrderedWalletProviders = () => {
     const providers = getWalletProviderCandidates();
     if (providers.length <= 1) {
@@ -56,6 +65,8 @@ export const getOrderedWalletProviders = () => {
     const metaMask = nonCore.filter((provider) => isMetaMaskWallet(provider));
     const others = nonCore.filter((provider) => !isMetaMaskWallet(provider));
 
+
+
     if (PREFERRED_WALLET === 'core') {
         return [...coreFirst, ...metaMask, ...others];
     }
@@ -65,11 +76,14 @@ export const getOrderedWalletProviders = () => {
     return [...providers];
 };
 
+// getPreferredWalletProvider: helper function.
 export const getPreferredWalletProvider = () => {
     const providers = getOrderedWalletProviders();
     if (providers.length === 0) {
         throw new Error('No EVM wallet provider is available. Please install MetaMask or Core Wallet.');
     }
+
+
 
     if (PREFERRED_WALLET !== 'core' && PREFERRED_WALLET !== 'metamask') {
         return { provider: providers[0], source: 'fallback' };
@@ -84,6 +98,8 @@ export const getPreferredWalletProvider = () => {
         }
         return provider;
     });
+
+
 
     if (hasPreferredProvider) {
         return {
@@ -105,6 +121,7 @@ export const getPreferredWalletProvider = () => {
 };
 
 // Normalize chain id into positive integer.
+// normalizeNumericChainId: helper function.
 const normalizeNumericChainId = (value, fallback = FALLBACK_CHAIN_ID) => {
     if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
         return Math.floor(value);
@@ -125,12 +142,14 @@ const normalizeNumericChainId = (value, fallback = FALLBACK_CHAIN_ID) => {
     return fallback;
 };
 
+// toHexChainId: helper function.
 const toHexChainId = (chainId) => {
     const normalized = normalizeNumericChainId(chainId, FALLBACK_CHAIN_ID);
     return `0x${normalized.toString(16)}`;
 };
 
 // Resolve payment chain id with fallback to configured defaults.
+// getPaymentChainId: helper function.
 export const getPaymentChainId = (details) => {
     if (!details) {
         return FALLBACK_CHAIN_ID;
@@ -141,6 +160,7 @@ export const getPaymentChainId = (details) => {
     );
 };
 
+// getPaymentNetwork: helper function.
 export const getPaymentNetwork = (details) => {
     const chainId = getPaymentChainId(details);
     const network = String(details?.network || '').trim();
@@ -151,6 +171,7 @@ export const getPaymentNetwork = (details) => {
 };
 
 // Ensure wallet is connected and on the expected chain for payment.
+// ensureWalletChain: helper function.
 export const ensureWalletChain = async (details, provider = null) => {
     const selectedProvider = provider || getPreferredWalletProvider().provider;
     const chainId = getPaymentChainId(details);
@@ -160,6 +181,8 @@ export const ensureWalletChain = async (details, provider = null) => {
         ? FALLBACK_NETWORK_NAME
         : `Chain ${chainId}`;
     const ethereum = selectedProvider;
+
+
 
     if (!ethereum?.request) {
         throw new Error('No EVM wallet provider is available. Please install MetaMask or Core Wallet.');

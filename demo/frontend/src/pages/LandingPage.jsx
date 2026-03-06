@@ -96,6 +96,7 @@ export default function LandingPage() {
     );
 }
 
+// FeatureCard: helper function.
 function FeatureCard({ icon, title, description, price }) {
     return (
         <div className="card text-left hover:-translate-y-1 transition-transform duration-300 flex flex-col justify-between h-full bg-white/50 border border-white/60">

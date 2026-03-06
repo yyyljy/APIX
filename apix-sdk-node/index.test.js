@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const jwt = require("jsonwebtoken");
 const { ApixMiddleware } = require("./index.js");
 
+// createTestStore: helper function.
 function createTestStore() {
   const map = new Map();
   return {
@@ -18,6 +19,7 @@ function createTestStore() {
   };
 }
 
+// createMiddlewareWithSession: helper function.
 function createMiddlewareWithSession(quota = 2) {
   const secret = "unit-test-secret";
   const sessionStore = createTestStore();
@@ -36,6 +38,7 @@ function createMiddlewareWithSession(quota = 2) {
   return { middleware, token, sessionStore };
 }
 
+// testStartRequestMarksPendingAndBlocksDuplicateStart: helper function.
 function testStartRequestMarksPendingAndBlocksDuplicateStart() {
   const { middleware, token, sessionStore } = createMiddlewareWithSession(2);
 
@@ -47,6 +50,7 @@ function testStartRequestMarksPendingAndBlocksDuplicateStart() {
   assert.equal(session.requestState, "pending");
 }
 
+// testRollbackOnlyRefundsPendingRequest: helper function.
 function testRollbackOnlyRefundsPendingRequest() {
   const { middleware, token, sessionStore } = createMiddlewareWithSession(1);
 
@@ -59,6 +63,7 @@ function testRollbackOnlyRefundsPendingRequest() {
   assert.equal(session.requestState, "idle");
 }
 
+// testCommitOnlyTransitionsPendingToIdle: helper function.
 function testCommitOnlyTransitionsPendingToIdle() {
   const { middleware, token, sessionStore } = createMiddlewareWithSession(1);
 

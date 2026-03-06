@@ -11,6 +11,7 @@ import { ensureWalletChain, getPaymentNetwork, getPreferredWalletProvider } from
 import { createTransaction, updateTransaction } from "../utils/transactions";
 
 // Demo page controller for Stripe and APIX payment demonstration flows.
+// DemoPage: helper function.
 const DemoPage = () => {
   const [stripeResult, setStripeResult] = useState(null);
   const [apixTrace, setApixTrace] = useState(null);
@@ -29,6 +30,7 @@ const DemoPage = () => {
   const toastTimerRef = useRef(null);
   const paymentFlowRef = useRef(0);
 
+// showToast: helper function.
   const showToast = (message, type = "info") => {
     if (toastTimerRef.current) {
       clearTimeout(toastTimerRef.current);
@@ -42,7 +44,8 @@ const DemoPage = () => {
   };
 
   // Parse a timeout-safe positive integer with fallback when parsing fails.
-  const normalizePositiveInt = (value, fallback) => {
+// normalizePositiveInt: helper function.
+const normalizePositiveInt = (value, fallback) => {
     const parsed = Number.parseInt(String(value).trim(), 10);
     if (!Number.isFinite(parsed) || parsed <= 0) {
       return fallback;
@@ -51,7 +54,8 @@ const DemoPage = () => {
   };
 
   // Wrap async work with a timeout so popup dismissals cannot hang the payment flow.
-  const runWithTimeout = (promise, timeoutMs, timeoutMessage) => {
+// runWithTimeout: helper function.
+const runWithTimeout = (promise, timeoutMs, timeoutMessage) => {
     const ms = normalizePositiveInt(timeoutMs, 30000);
     return new Promise((resolve, reject) => {
       const timerId = setTimeout(() => {
@@ -70,7 +74,8 @@ const DemoPage = () => {
   };
 
   // Mark flow failure and finalize UI + transaction state in one place.
-  const markFlowFailed = (flowId, message = "Payment failed") => {
+// markFlowFailed: helper function.
+const markFlowFailed = (flowId, message = "Payment failed") => {
     if (flowId !== paymentFlowRef.current) {
       return;
     }
@@ -98,6 +103,7 @@ const DemoPage = () => {
     };
   }, []);
 
+// summarizePayload: helper function.
   const summarizePayload = (payload, status) => {
     if (!payload) return "No payload";
     const lines = [];
@@ -117,12 +123,14 @@ const DemoPage = () => {
   };
 
   // Open Stripe mock modal.
-  const handleStripeClick = () => {
+// handleStripeClick: helper function.
+const handleStripeClick = () => {
     setShowStripeModal(true);
   };
 
   // Simulate Stripe completion and then fetch protected data via Stripe route.
-  const confirmStripePayment = async () => {
+// confirmStripePayment: helper function.
+const confirmStripePayment = async () => {
     setIsProcessingStripe(true);
     await new Promise((resolve) => setTimeout(resolve, 1500));
     setShowStripeModal(false);
@@ -131,7 +139,8 @@ const DemoPage = () => {
   };
 
   // Call Stripe-like sample API and persist transaction status.
-  const callStripeApi = async () => {
+// callStripeApi: helper function.
+const callStripeApi = async () => {
     try {
       const res = await fetchStripeProduct();
       const data = await res.json();
@@ -160,12 +169,15 @@ const DemoPage = () => {
   };
 
   // Start APIX flow and handle 402 challenge by showing the selected mode.
-  const initiateApixFlow = async () => {
+// initiateApixFlow: helper function.
+const initiateApixFlow = async () => {
     try {
       setApixRaw(null);
       setApixTrace("1. Requesting protected resource...");
       const res = await fetchProxyResource("listing_001", null, clientType);
       const payload = await res.json();
+
+
 
       if (res.status === 402) {
         const details = payload?.error?.details || payload?.details;
@@ -213,6 +225,8 @@ const DemoPage = () => {
             `${hint ? `Hint: ${hint}` : "Awaiting confirmation..."}`,
         );
 
+
+
         if (clientType === "human") {
           setShowApixModal(true);
           showToast("Human mode: wallet modal opened for on-chain payment.", "info");
@@ -232,7 +246,8 @@ const DemoPage = () => {
   };
 
   // Execute wallet chain setup + send tx for human payment flow.
-  const confirmApixPayment = async () => {
+// confirmApixPayment: helper function.
+const confirmApixPayment = async () => {
     if (!paymentDetails) return;
     if (isProcessingApix) return;
 
@@ -279,7 +294,8 @@ const DemoPage = () => {
   };
 
   // Verify tx hash or existing hash payload to obtain APIX access token.
-  const verifyApixTransaction = async (txHash, flowId = paymentFlowRef.current) => {
+// verifyApixTransaction: helper function.
+const verifyApixTransaction = async (txHash, flowId = paymentFlowRef.current) => {
     if (!paymentDetails || flowId !== paymentFlowRef.current) return;
 
     setIsProcessingApix(true);
@@ -360,7 +376,8 @@ const DemoPage = () => {
   };
 
   // Cancel current payment flow and update status immediately.
-  const cancelApixPayment = () => {
+// cancelApixPayment: helper function.
+const cancelApixPayment = () => {
     paymentFlowRef.current += 1;
     const currentTxnId = pendingApixTxnId;
 
@@ -388,6 +405,7 @@ const DemoPage = () => {
         ? "bg-red-600"
         : "bg-slate-900";
 
+// verifyTxFromAgent: helper function.
   const verifyTxFromAgent = async () => {
     // Verify tx hash submitted manually in agent mode.
     if (!paymentDetails || !agentTxHash) return;

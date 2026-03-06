@@ -1,5 +1,6 @@
 const STORAGE_KEY = "apix_demo_transactions_v1";
 
+// readAll: helper function.
 const readAll = () => {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -11,14 +12,17 @@ const readAll = () => {
   }
 };
 
+// writeAll: helper function.
 const writeAll = (transactions) => {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(transactions));
 };
 
+// listTransactions: helper function.
 export const listTransactions = () => {
   return readAll().sort((a, b) => b.createdAt - a.createdAt);
 };
 
+// createTransaction: helper function.
 export const createTransaction = (input) => {
   const now = Date.now();
   const transaction = {
@@ -40,6 +44,7 @@ export const createTransaction = (input) => {
   return transaction;
 };
 
+// updateTransaction: helper function.
 export const updateTransaction = (id, patch) => {
   const all = readAll();
   const idx = all.findIndex((t) => t.id === id);
@@ -61,6 +66,7 @@ export const updateTransaction = (id, patch) => {
   return next;
 };
 
+// clearTransactions: helper function.
 export const clearTransactions = () => {
   localStorage.removeItem(STORAGE_KEY);
 };

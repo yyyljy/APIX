@@ -19,6 +19,9 @@ const allowedOrigins = new Set(
         .filter((value) => value && value !== '*')
 );
 
+
+
+
 if (!metricsToken || metricsToken.toLowerCase() === 'change-this-token') {
     metricsToken = crypto.randomBytes(24).toString('hex');
     console.warn('APIX_METRICS_TOKEN was missing or placeholder. Generated an ephemeral token for this process.');
@@ -206,6 +209,7 @@ if (process.env.APIX_JWT_KID) {
 }
 const apix = new ApixMiddleware(apixConfig);
 
+// parsePositiveInt: helper function.
 const parsePositiveInt = (value: string | undefined, fallback: number): number => {
     const trimmed = (value || '').trim();
     const parsed = Number.parseInt(trimmed, 10);
@@ -215,6 +219,7 @@ const parsePositiveInt = (value: string | undefined, fallback: number): number =
     return parsed;
 };
 
+// normalizeChainId: helper function.
 const normalizeChainId = (value: string | number | undefined, fallback: number): number => {
     if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
         return Math.floor(value);
@@ -222,11 +227,13 @@ const normalizeChainId = (value: string | number | undefined, fallback: number):
     return parsePositiveInt(typeof value === 'string' ? value : '', fallback);
 };
 
+// parseAmountWei: helper function.
 const parseAmountWei = (value: string | undefined, fallback: string): string => {
     const trimmed = (value || '').trim();
     return /^\d+$/.test(trimmed) ? trimmed : fallback;
 };
 
+// normalizeNetwork: helper function.
 const normalizeNetwork = (rawNetwork: string | undefined, chainId: number): string => {
     const trimmed = (rawNetwork || '').trim();
     if (!trimmed) {
@@ -244,6 +251,7 @@ const normalizeNetwork = (rawNetwork: string | undefined, chainId: number): stri
     return `eip155:${chainId}`;
 };
 
+// parseNetworkChainId: helper function.
 const parseNetworkChainId = (network: string): number => {
     const match = /^eip155:(\d+)$/.exec((network || '').trim());
     if (!match) return 0;
@@ -269,6 +277,7 @@ const PAYMENT_PROFILE = {
 
 type ClientType = 'human' | 'agent';
 
+// parseClientType: helper function.
 const parseClientType = (rawType: string | undefined): ClientType => {
     if (!rawType) {
         return 'human';
@@ -280,6 +289,7 @@ const parseClientType = (rawType: string | undefined): ClientType => {
     return 'human';
 };
 
+// extractClientType: helper function.
 const extractClientType = (req: Request): ClientType => {
     const headerCandidates = [
         'x-apix-client-type',
@@ -296,6 +306,7 @@ const extractClientType = (req: Request): ClientType => {
     return 'human';
 };
 
+// getClientTypeHint: helper function.
 const getClientTypeHint = (clientType: ClientType) => {
     if (clientType === 'agent') {
         return {
@@ -342,12 +353,14 @@ const sendError = (
         request_id: requestId
     });
 };
+// getOrCreateRequestId: helper function.
 const getOrCreateRequestId = (req: Request): string => {
     const fromHeader = req.header('X-Request-ID');
     if (fromHeader && fromHeader.trim()) return fromHeader.trim();
     return `req_${crypto.randomUUID()}`;
 };
 
+// logEvent: helper function.
 const logEvent = (event: string, fields: Record<string, unknown>) => {
     console.log(JSON.stringify({
         ts: new Date().toISOString(),
@@ -437,6 +450,7 @@ app.get('/metrics', (_req: Request, res: Response) => {
     });
 });
 
+// parsePaymentSignature: helper function.
 const parsePaymentSignature = (value: string): string => {
     const raw = value.trim();
     if (!raw) return '';
@@ -455,8 +469,10 @@ const parsePaymentSignature = (value: string): string => {
     return '';
 };
 
+// extractPaymentProof: helper function.
 const extractPaymentProof = (req: Request): string => {
-    const normalizeHeaderValue = (value: string | string[] | undefined): string => {
+// normalizeHeaderValue: helper function.
+const normalizeHeaderValue = (value: string | string[] | undefined): string => {
         if (typeof value === 'string') {
             return value.trim();
         }
@@ -485,6 +501,7 @@ const extractPaymentProof = (req: Request): string => {
 };
 
 // --- CORE BUSINESS LOGIC ---
+// getPremiumData: helper function.
 const getPremiumData = () => {
     return {
         id: "premium-item-unique-id",
@@ -498,6 +515,7 @@ const getPremiumData = () => {
 // --- MIDDLEWARES ---
 
 // Mock Stripe Middleware
+// stripeMiddleware: helper function.
 const stripeMiddleware = (req: Request, res: Response, next: NextFunction) => {
     const authHeader = req.headers['authorization'];
 
@@ -513,6 +531,7 @@ const stripeMiddleware = (req: Request, res: Response, next: NextFunction) => {
 };
 
 // Apix Middleware Wrapper
+// apixMiddlewareWrapper: helper function.
 const apixMiddlewareWrapper = async (req: Request, res: Response, next: NextFunction) => {
     const token = extractPaymentProof(req);
     const requestId = (req as any).requestId || getOrCreateRequestId(req);
@@ -527,6 +546,9 @@ const apixMiddlewareWrapper = async (req: Request, res: Response, next: NextFunc
         recipient: PAYMENT_PROFILE.recipient,
         minConfirmations: PAYMENT_PROFILE.minConfirmations
     };
+
+
+
 
     if (!token) {
         // Standard x402/L402 Pattern: Return WWW-Authenticate header
@@ -558,6 +580,9 @@ const apixMiddlewareWrapper = async (req: Request, res: Response, next: NextFunc
     if (token.startsWith('0x') && token.length < 100) {
         logEvent("apix.verify_started", { request_id: requestId, tx_hash: token, client_type: clientType });
         const result = await apix.verifyPayment(token, paymentDetails);
+
+
+
 
         if (!result.success || !result.token) {
             logEvent("apix.verify_failed", {
@@ -613,9 +638,13 @@ const apixMiddlewareWrapper = async (req: Request, res: Response, next: NextFunc
 
     // Hook into response finish to commit/rollback
     let quotaFinalized = false;
-    const finalizeQuota = () => {
+// finalizeQuota: helper function.
+const finalizeQuota = () => {
         if (quotaFinalized) return;
         quotaFinalized = true;
+
+
+
 
         if (res.statusCode >= 200 && res.statusCode < 300) {
             void apix.commitRequestState(validToken).catch((error: any) => {
@@ -669,6 +698,9 @@ app.get('/apix-product', apixMiddlewareWrapper, (req: Request, res: Response) =>
 });
 
 export { app };
+
+
+
 
 if (process.env.NODE_ENV !== 'test') {
     app.listen(port, () => {

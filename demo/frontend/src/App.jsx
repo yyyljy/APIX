@@ -3,6 +3,7 @@ import MainLayout from './layouts/MainLayout';
 import DemoPage from './pages/DemoPage';
 import TransactionHistoryPage from './pages/TransactionHistoryPage';
 
+// App: helper function.
 function App() {
     return (
         <Router>

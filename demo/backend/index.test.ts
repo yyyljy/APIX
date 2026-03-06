@@ -8,6 +8,7 @@ import request from 'supertest';
 
 const JWT_SECRET = 'backend-test-secret';
 
+// createSeededSessionStore: helper function.
 function createSeededSessionStore(token: string): string {
     const filePath = path.join(os.tmpdir(), `apix-session-store-${Date.now()}.json`);
     const claims = jwt.decode(token);

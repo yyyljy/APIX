@@ -76,6 +76,7 @@ export default function DocsPage() {
     );
 }
 
+// DocLink: helper function.
 function DocLink({ children, active }) {
     return (
         <a href="#" className={`block px-3 py-2 rounded-lg text-sm font-medium transition-colors ${active
@@ -87,6 +88,7 @@ function DocLink({ children, active }) {
     );
 }
 
+// ConceptCard: helper function.
 function ConceptCard({ icon, title, description }) {
     return (
         <div className="card p-6">

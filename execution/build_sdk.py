@@ -3,6 +3,7 @@ import os
 import sys
 import shutil
 
+# build_sdk: helper function.
 def build_sdk():
     """
     Builds the Apix SDK using npm run build.

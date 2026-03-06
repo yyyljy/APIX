@@ -24,17 +24,29 @@ export interface SessionStore {
 export class InMemorySessionStore implements SessionStore {
     private cache: Map<string, SessionData>;
 
+    // constructor: helper function.
+
+
     constructor() {
         this.cache = new Map();
     }
+
+    // get: helper function.
+
 
     get(token: string): SessionData | undefined {
         return this.cache.get(token);
     }
 
+    // set: helper function.
+
+
     set(token: string, value: SessionData): void {
         this.cache.set(token, value);
     }
+
+    // delete: helper function.
+
 
     delete(token: string): void {
         this.cache.delete(token);
@@ -135,24 +147,39 @@ export class FileSessionStore implements SessionStore {
     private filePath: string;
     private lockPath: string;
 
+    // constructor: helper function.
+
+
     constructor(filePath: string) {
         this.filePath = path.resolve(filePath);
         this.lockPath = `${this.filePath}.lock`;
         this.ensureStorageDirectory();
     }
 
+    // get: helper function.
+
+
     get(token: string): SessionData | undefined {
         const snapshot = this.readSnapshot();
         return snapshot[token];
     }
 
+    // set: helper function.
+
+
     set(token: string, value: SessionData): void {
         this.update(token, () => value);
     }
 
+    // delete: helper function.
+
+
     delete(token: string): void {
         this.update(token, () => undefined);
     }
+
+    // update: helper function.
+
 
     update(token: string, updater: (value: SessionData | undefined) => SessionData | undefined): SessionData | undefined {
         return this.withLock(() => {
@@ -197,10 +224,16 @@ export class FileSessionStore implements SessionStore {
         throw new Error(`Timed out acquiring session store lock: ${this.lockPath}`);
     }
 
+    // ensureStorageDirectory: helper function.
+
+
     private ensureStorageDirectory(): void {
         const directory = path.dirname(this.filePath);
         fs.mkdirSync(directory, { recursive: true });
     }
+
+    // readSnapshot: helper function.
+
 
     private readSnapshot(): SessionStoreSnapshot {
         try {
@@ -220,6 +253,9 @@ export class FileSessionStore implements SessionStore {
         }
         return {};
     }
+
+    // writeSnapshot: helper function.
+
 
     private writeSnapshot(snapshot: SessionStoreSnapshot): void {
         this.ensureStorageDirectory();
@@ -243,6 +279,9 @@ export class ApixMiddleware {
     private jwtSecret: string;
     private verificationPairCache: Map<string, LocalVerificationRecord>;
     private verificationTxOwner: Map<string, string>;
+
+    // constructor: helper function.
+
 
     constructor(config: ApixConfig = {}) {
         this.config = config;
@@ -290,6 +329,9 @@ export class ApixMiddleware {
         this.verificationTxOwner = new Map();
     }
 
+    // updateSession: helper function.
+
+
     private updateSession(token: string, updater: (value: SessionData | undefined) => SessionData | undefined): SessionData | undefined {
         const candidate = this.sessionStore as any;
         if (candidate && typeof candidate.update === 'function') {
@@ -305,14 +347,23 @@ export class ApixMiddleware {
         return next;
     }
 
+    // validateSessionState: helper function.
+
+
     async validateSessionState(token: string): Promise<boolean> {
         return this.validateSession(token);
     }
+
+    // startRequestState: helper function.
+
 
     async startRequestState(token: string): Promise<boolean> {
         const result = await this.startRequestStateWithResult(token);
         return result.started;
     }
+
+    // startRequestStateWithResult: helper function.
+
 
     async startRequestStateWithResult(token: string): Promise<SessionStartResult> {
         if (!token) {
@@ -329,17 +380,29 @@ export class ApixMiddleware {
         };
     }
 
+    // commitRequestState: helper function.
+
+
     async commitRequestState(token: string): Promise<void> {
         this.commitRequest(token);
     }
+
+    // rollbackRequestState: helper function.
+
 
     async rollbackRequestState(token: string): Promise<void> {
         this.rollbackRequest(token);
     }
 
+    // parseRequestId: helper function.
+
+
     private parseRequestId(token?: string): string {
         return (token || '').trim();
     }
+
+    // parseNetworkChainId: helper function.
+
 
     private parseNetworkChainId(network: string): number {
         const trimmed = (network || '').trim();
@@ -358,6 +421,9 @@ export class ApixMiddleware {
         return chainId;
     }
 
+    // parseEnvInt: helper function.
+
+
     private parseEnvInt(configValue: number | string | undefined, envValue: string | undefined, fallback: number): number {
         if (typeof configValue === 'number' && Number.isFinite(configValue)) {
             return configValue;
@@ -369,6 +435,9 @@ export class ApixMiddleware {
         }
         return fallback;
     }
+
+    // parseHexToBigInt: helper function.
+
 
     private parseHexToBigInt(value: string, label: string): bigint {
         const normalized = (value || '').trim().replace(/^0x/i, '');
@@ -420,6 +489,9 @@ export class ApixMiddleware {
         throw new Error(lastError);
     }
 
+    // isL1RetryableError: helper function.
+
+
     private isL1RetryableError(message: string): boolean {
         const lowercase = message.toLowerCase();
         const retryablePatterns = [
@@ -433,6 +505,9 @@ export class ApixMiddleware {
         return retryablePatterns.some((pattern) => lowercase.includes(pattern));
     }
 
+    // cleanupVerificationCache: helper function.
+
+
     private cleanupVerificationCache(): void {
         const now = Date.now();
         for (const [key, record] of this.verificationPairCache.entries()) {
@@ -445,10 +520,16 @@ export class ApixMiddleware {
         }
     }
 
+    // getPairCacheKey: helper function.
+
+
     private getPairCacheKey(requestId: string, txHash: string): string {
         const normalizedRequestId = requestId || '';
         return `${normalizedRequestId}:${txHash}`;
     }
+
+    // getCachedVerificationToken: helper function.
+
 
     private getCachedVerificationToken(requestId: string, txHash: string): string | undefined {
         this.cleanupVerificationCache();
@@ -461,6 +542,9 @@ export class ApixMiddleware {
         return record.token;
     }
 
+    // setCachedVerificationToken: helper function.
+
+
     private setCachedVerificationToken(requestId: string, txHash: string, token: string, requestIdValue: string, expiresAt: number): void {
         const key = this.getPairCacheKey(requestId, txHash);
         this.verificationPairCache.set(key, { token, expiresAt, requestId: requestIdValue, txHash });
@@ -468,6 +552,9 @@ export class ApixMiddleware {
             this.verificationTxOwner.set(txHash, requestIdValue);
         }
     }
+
+    // verifyTransactionOnChain: helper function.
+
 
     private async verifyTransactionOnChain(txHash: string, payment: PaymentDetails): Promise<void> {
         if (!payment.network || !payment.recipient || !payment.amountWei) {
@@ -525,6 +612,9 @@ export class ApixMiddleware {
         }
     }
 
+    // issueLocalSessionToken: helper function.
+
+
     private issueLocalSessionToken(payment: PaymentDetails, txHash: string): { token: string; claims: any } {
         const signOptions = {
             algorithm: 'HS256',
@@ -562,6 +652,8 @@ export class ApixMiddleware {
             return { success: false, message: 'Transaction hash is missing.', code: 'missing_tx_hash', retryable: false };
         }
         const requestId = this.parseRequestId(payment?.requestId);
+
+
 
         if (!payment) {
             return {
@@ -602,6 +694,8 @@ export class ApixMiddleware {
                 remainingQuota: claims.max_requests || 10,
                 requestState: 'idle'
             });
+
+
 
             if (claims?.exp && typeof claims.exp === 'number') {
                 this.setCachedVerificationToken(requestId, normalizedTxHash, token, requestId, claims.exp * 1000);
@@ -658,6 +752,8 @@ export class ApixMiddleware {
     validateSession(token: string): boolean {
         const session = this.sessionStore.get(token);
 
+
+
         if (!session) {
             // For quota integrity, token must be present in stateful session store.
             return false;
@@ -669,6 +765,8 @@ export class ApixMiddleware {
             this.updateSession(token, () => undefined);
             return false;
         }
+
+
 
         if (session.remainingQuota <= 0) {
             return false;
@@ -683,6 +781,9 @@ export class ApixMiddleware {
     startRequest(token: string): boolean {
         return this.startRequestWithResult(token).started;
     }
+
+    // startRequestWithResult: helper function.
+
 
     private startRequestWithResult(token: string): SessionStartResult {
         if (!token) {
@@ -706,6 +807,8 @@ export class ApixMiddleware {
                 remainingQuota: session.remainingQuota - 1
             };
         });
+
+
 
         if (!nextSession || !started) {
             const current = this.sessionStore.get(token);

@@ -1,6 +1,7 @@
 ﻿import React from 'react';
 
 // Display the wallet payment modal for human wallet flow.
+// PaymentModal: helper function.
 const PaymentModal = ({ isOpen, onClose, onConfirm, paymentDetails, isProcessing }) => {
     if (!isOpen) return null;
 

@@ -1,11 +1,13 @@
 import { useMemo, useState } from "react";
 import { clearTransactions, listTransactions } from "../utils/transactions";
 
+// formatDateTime: helper function.
 const formatDateTime = (timestamp) => {
   if (!timestamp) return "-";
   return new Date(timestamp).toLocaleString();
 };
 
+// statusBadgeClass: helper function.
 const statusBadgeClass = (status) => {
   if (status === "success") return "bg-emerald-100 text-emerald-700";
   if (status === "failed") return "bg-rose-100 text-rose-700";
