@@ -25,8 +25,9 @@ function createSeededSessionStore(token: string): string {
 async function run() {
     process.env.NODE_ENV = 'test';
     process.env.APIX_JWT_SECRET = JWT_SECRET;
-    process.env.APIX_RPC_URL = 'https://api.avax.network/ext/bc/C/rpc';
+    process.env.APIX_VERIFICATION_RPC_URL = 'https://api.avax.network/ext/bc/C/rpc';
     process.env.APIX_METRICS_TOKEN = 'metrics-test-token';
+    process.env.APIX_PROVIDER_TOKEN = 'provider-token-for-test';
 
     const proofToken = jwt.sign({
         tx_hash: '0xprefunded',
@@ -45,10 +46,12 @@ async function run() {
         const app = backendModule?.app || backendModule?.default?.app || backendModule?.default;
         assert.ok(app, 'expected backend app export');
 
-        server = await new Promise((resolve, reject) => {
-            const candidate = app.listen(0, '127.0.0.1', () => resolve(candidate));
-            candidate.on('error', reject);
-        }) as http.Server;
+        server = app.listen(0, '127.0.0.1');
+        await new Promise<void>((resolve, reject) => {
+            server?.once('listening', () => resolve());
+            server?.once('error', reject);
+        });
+        assert.ok(server.address() && typeof server.address() !== 'string', 'Test server should have address object');
 
         const client = request(server);
 
@@ -90,7 +93,17 @@ async function run() {
         throw error;
     } finally {
         if (server) {
-            await new Promise((resolve) => server?.close(() => resolve(undefined)));
+            if (server.listening) {
+                await new Promise((resolve, reject) => {
+                    server?.close((error?: Error | any) => {
+                        if (error && (error as any)?.code !== 'ERR_SERVER_NOT_RUNNING') {
+                            reject(error);
+                            return;
+                        }
+                        resolve(undefined);
+                    });
+                });
+            }
         }
         fs.rmSync(sessionStorePath, { force: true });
     }

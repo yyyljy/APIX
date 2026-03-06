@@ -247,7 +247,8 @@ export class ApixMiddleware {
     constructor(config: ApixConfig = {}) {
         this.config = config;
         this.environment = (process.env.APIX_ENV || 'development').trim().toLowerCase();
-        this.rpcUrl = (config.rpcUrl || process.env.APIX_RPC_URL || '').trim();
+        const rpcUrlFromEnv = (process.env.APIX_VERIFICATION_RPC_URL || '').trim();
+        this.rpcUrl = (config.rpcUrl || rpcUrlFromEnv).trim();
         this.rpcTimeoutMs = this.parseEnvInt(config.rpcTimeoutMs, process.env.APIX_RPC_TIMEOUT_MS, 8000);
         if (this.rpcTimeoutMs <= 0) {
             this.rpcTimeoutMs = 8000;
@@ -271,7 +272,7 @@ export class ApixMiddleware {
             throw new Error('Missing APIX_JWT_SECRET (or provide jwtSecret in ApixMiddleware config).');
         }
         if (!this.rpcUrl) {
-            throw new Error('Missing APIX_RPC_URL for on-chain verification.');
+            throw new Error('Missing APIX_VERIFICATION_RPC_URL (or config.rpcUrl) for on-chain verification.');
         }
         if (config.sessionStore) {
             this.sessionStore = config.sessionStore;

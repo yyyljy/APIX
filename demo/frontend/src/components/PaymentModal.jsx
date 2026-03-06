@@ -17,8 +17,7 @@ const PaymentModal = ({ isOpen, onClose, onConfirm, paymentDetails, isProcessing
                         </div>
                         <button
                             onClick={onClose}
-                            disabled={isProcessing}
-                            className="rounded-md p-1 text-white/80 transition hover:bg-white/10 hover:text-white disabled:cursor-not-allowed"
+                            className="rounded-md p-1 text-white/80 transition hover:bg-white/10 hover:text-white"
                         >
                             x
                         </button>

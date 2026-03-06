@@ -43,10 +43,33 @@ This gives you the speed of API-first design with verifiable crypto settlement.
 ### Option 1: All-in-one
 
 ```bash
-python execution/run_demo.py --rpc-url https://your-rpc-endpoint
+python execution/run_demo.py --verification-rpc-file /path/to/secure-verification-rpc.txt
+# or for env-based setups:
+# APIX_VERIFICATION_RPC_URL=https://your-rpc-endpoint python execution/run_demo.py
+#
+# Demo backend can also get the provider token for API-key style tenancy controls:
+# APIX_PROVIDER_TOKEN=company-a-token python execution/run_demo.py
 ```
 
 Starts backend (`http://localhost:3000`) and frontend, with readiness checks.
+
+### Fast local verify
+
+```bash
+cp demo/backend/.env.example demo/backend/.env
+cp demo/frontend/.env.example demo/frontend/.env
+
+# 1) Set verification RPC and provider token (backend-only)
+sed -i '' -e 's#^APIX_VERIFICATION_RPC_URL=.*#APIX_VERIFICATION_RPC_URL=https://subnets.avax.network/apix/testnet/rpc#' demo/backend/.env
+sed -i '' -e 's#^APIX_PROVIDER_TOKEN=.*#APIX_PROVIDER_TOKEN=provider-token-placeholder#' demo/backend/.env
+
+# 2) Set public RPC (frontend)
+sed -i '' -e 's#^VITE_AVALANCHE_RPC_URL=.*#VITE_AVALANCHE_RPC_URL=https://api.avax.network/ext/bc/C/rpc#' demo/frontend/.env
+
+python execution/run_demo.py
+```
+
+If your shell doesn't support `sed -i ''` (Linux/Git Bash), use normal `sed -i`.
 
 ### Option 2: Step-by-step
 
@@ -74,7 +97,7 @@ npm run dev
 
 ## Current MVP limits
 
-- On-chain verification is required (`--rpc-url` or `APIX_RPC_URL`).
+- On-chain verification is required (`APIX_VERIFICATION_RPC_URL`).
 - Session persistence defaults to local file storage.
 - `/metrics` is secured by Bearer token; production mode disables wildcard CORS.
 

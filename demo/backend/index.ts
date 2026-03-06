@@ -156,6 +156,7 @@ app.use(express.json());
 // Initialize Apix SDK
 const apixConfig: {
     jwtSecret?: string;
+    apiKey?: string;
     rpcUrl?: string;
     rpcTimeoutMs?: number;
     rpcMaxRetries?: number;
@@ -167,8 +168,11 @@ const apixConfig: {
 if (process.env.APIX_JWT_SECRET) {
     apixConfig.jwtSecret = process.env.APIX_JWT_SECRET;
 }
-if (process.env.APIX_RPC_URL) {
-    apixConfig.rpcUrl = process.env.APIX_RPC_URL;
+if (process.env.APIX_VERIFICATION_RPC_URL) {
+    apixConfig.rpcUrl = process.env.APIX_VERIFICATION_RPC_URL;
+}
+if (process.env.APIX_PROVIDER_TOKEN) {
+    apixConfig.apiKey = process.env.APIX_PROVIDER_TOKEN;
 }
 if (process.env.APIX_RPC_TIMEOUT_MS) {
     const parsed = Number.parseInt(process.env.APIX_RPC_TIMEOUT_MS, 10);
@@ -261,6 +265,62 @@ const PAYMENT_PROFILE = {
     amountWei: parseAmountWei(process.env.APIX_PAYMENT_AMOUNT_WEI, '100000000000000000'),
     recipient: (process.env.APIX_PAYMENT_RECIPIENT || '0x71C7656EC7ab88b098defB751B7401B5f6d8976F').trim(),
     minConfirmations: parsePositiveInt(process.env.APIX_MIN_CONFIRMATIONS, 1)
+};
+
+type ClientType = 'human' | 'agent';
+
+const parseClientType = (rawType: string | undefined): ClientType => {
+    if (!rawType) {
+        return 'human';
+    }
+    const normalized = rawType.trim().toLowerCase();
+    if (normalized === 'agent') {
+        return 'agent';
+    }
+    return 'human';
+};
+
+const extractClientType = (req: Request): ClientType => {
+    const headerCandidates = [
+        'x-apix-client-type',
+        'apix-client-type',
+        'x-client-type',
+        'x-demo-client-type'
+    ];
+    for (const key of headerCandidates) {
+        const value = req.get(key);
+        if (value) {
+            return parseClientType(value);
+        }
+    }
+    return 'human';
+};
+
+const getClientTypeHint = (clientType: ClientType) => {
+    if (clientType === 'agent') {
+        return {
+            payment_flow: 'agent_submit_tx_hash',
+            payment_hint: {
+                mode: 'agent',
+                required_action: 'Submit tx hash to retry as Authorization header',
+                authorization_scheme: 'Apix <tx_hash>',
+                verification_hint: 'Call Authorization: Apix <tx_hash> with X-Request-ID equal to payment request_id.'
+            },
+            payment_channels: ['agent_tx_hash'],
+            channels: ['agent_tx_hash']
+        };
+    }
+    return {
+        payment_flow: 'wallet_submit',
+        payment_hint: {
+            mode: 'human',
+            required_action: 'Open wallet and pay on-chain',
+            wallet_hint: 'MetaMask is required for demo.',
+            verification_hint: 'SDK/API retries automatically after transaction hash is submitted.'
+        },
+        payment_channels: ['evm_wallet'],
+        channels: ['evm_wallet']
+    };
 };
 
 const sendError = (
@@ -456,6 +516,7 @@ const stripeMiddleware = (req: Request, res: Response, next: NextFunction) => {
 const apixMiddlewareWrapper = async (req: Request, res: Response, next: NextFunction) => {
     const token = extractPaymentProof(req);
     const requestId = (req as any).requestId || getOrCreateRequestId(req);
+    const clientType = extractClientType(req);
     const paymentDetails = {
         requestId,
         chainId: PAYMENT_PROFILE.chainId,
@@ -470,11 +531,19 @@ const apixMiddlewareWrapper = async (req: Request, res: Response, next: NextFunc
     if (!token) {
         // Standard x402/L402 Pattern: Return WWW-Authenticate header
         const paymentResponse = apix.createPaymentRequest(paymentDetails);
+        const paymentHint = getClientTypeHint(clientType);
         const paymentBody = {
             ...paymentResponse.body,
+            client_type: clientType,
+            ...paymentHint,
             code: paymentResponse.body.code || "payment_required",
             message: paymentResponse.body.message || "Payment required to access premium resource.",
             retryable: paymentResponse.body.retryable ?? false
+        };
+        paymentBody.details = {
+            ...paymentResponse.body.details,
+            client_type: clientType,
+            ...paymentHint
         };
 
         res.set(paymentResponse.headers);
@@ -487,7 +556,7 @@ const apixMiddlewareWrapper = async (req: Request, res: Response, next: NextFunc
     // Heuristic: If token starts with 0x, treat as TxHash (Delegated Verification)
     // Otherwise treat as JWT (Session Validation)
     if (token.startsWith('0x') && token.length < 100) {
-        logEvent("apix.verify_started", { request_id: requestId, tx_hash: token });
+        logEvent("apix.verify_started", { request_id: requestId, tx_hash: token, client_type: clientType });
         const result = await apix.verifyPayment(token, paymentDetails);
 
         if (!result.success || !result.token) {

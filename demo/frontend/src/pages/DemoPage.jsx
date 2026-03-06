@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import PaymentModal from "../components/PaymentModal";
 import { ethers } from "ethers";
 import {
@@ -7,7 +7,7 @@ import {
   getErrorSnapshot,
   verifyPayment,
 } from "../utils/api";
-import { ensureWalletChain, getPaymentNetwork } from "../utils/chain";
+import { ensureWalletChain, getPaymentNetwork, getPreferredWalletProvider } from "../utils/chain";
 import { createTransaction, updateTransaction } from "../utils/transactions";
 
 const DemoPage = () => {
@@ -21,6 +21,78 @@ const DemoPage = () => {
   const [isProcessingApix, setIsProcessingApix] = useState(false);
   const [paymentDetails, setPaymentDetails] = useState(null);
   const [pendingApixTxnId, setPendingApixTxnId] = useState(null);
+  const [clientType, setClientType] = useState("human");
+  const [agentTxHash, setAgentTxHash] = useState("");
+  const [toastMessage, setToastMessage] = useState("");
+  const [toastType, setToastType] = useState("info");
+  const toastTimerRef = useRef(null);
+  const paymentFlowRef = useRef(0);
+
+  const showToast = (message, type = "info") => {
+    if (toastTimerRef.current) {
+      clearTimeout(toastTimerRef.current);
+    }
+    setToastMessage(message);
+    setToastType(type);
+    toastTimerRef.current = setTimeout(() => {
+      setToastMessage("");
+      toastTimerRef.current = null;
+    }, 5000);
+  };
+
+  const normalizePositiveInt = (value, fallback) => {
+    const parsed = Number.parseInt(String(value).trim(), 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      return fallback;
+    }
+    return parsed;
+  };
+
+  const runWithTimeout = (promise, timeoutMs, timeoutMessage) => {
+    const ms = normalizePositiveInt(timeoutMs, 30000);
+    return new Promise((resolve, reject) => {
+      const timerId = setTimeout(() => {
+        reject(new Error(timeoutMessage || `Wallet request timed out after ${ms}ms`));
+      }, ms);
+      promise
+        .then((value) => {
+          clearTimeout(timerId);
+          resolve(value);
+        })
+        .catch((error) => {
+          clearTimeout(timerId);
+          reject(error);
+        });
+    });
+  };
+
+  const markFlowFailed = (flowId, message = "Payment failed") => {
+    if (flowId !== paymentFlowRef.current) {
+      return;
+    }
+    if (pendingApixTxnId) {
+      updateTransaction(pendingApixTxnId, {
+        status: "failed",
+        txHash: null,
+        requestId: paymentDetails?.requestId || null,
+        message,
+      });
+    }
+    setApixTrace((prev) => `${prev}\n\nWallet payment failed: ${message}`);
+    showToast(`Wallet payment failed: ${message}`, "error");
+    setApixRaw(null);
+    setIsProcessingApix(false);
+    setPendingApixTxnId(null);
+    setShowApixModal(false);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) {
+        clearTimeout(toastTimerRef.current);
+      }
+    };
+  }, []);
 
   const summarizePayload = (payload, status) => {
     if (!payload) return "No payload";
@@ -84,7 +156,7 @@ const DemoPage = () => {
     try {
       setApixRaw(null);
       setApixTrace("1. Requesting protected resource...");
-      const res = await fetchProxyResource("listing_001");
+      const res = await fetchProxyResource("listing_001", null, clientType);
       const payload = await res.json();
 
       if (res.status === 402) {
@@ -95,6 +167,8 @@ const DemoPage = () => {
             request_id: payload?.error?.request_id || null,
           });
           const normalized = { ...payload, error: { ...snapshot, ...(payload?.error || {}) } };
+          setShowApixModal(false);
+          showToast(`Payment required (402) received for ${clientType} mode.`, "warning");
           setApixTrace(
             `2. Received 402 Payment Required\n${summarizePayload(normalized, res.status)}`
           );
@@ -119,17 +193,29 @@ const DemoPage = () => {
         });
         setPendingApixTxnId(pendingTx.id);
 
+        const hint = details.payment_hint?.required_action || "";
+        const modeLabel = clientType === "agent" ? "agent" : "human";
+        const fallbackModeMsg = details.payment_hint?.verification_hint || "Awaiting confirmation...";
+
         setApixTrace(
           `2. Received 402 Payment Required\n` +
             `Amount: ${details.payment_info.amount} ${details.payment_info.currency}\n` +
             `Recipient: ${details.payment_info.recipient}\n\n` +
-            "3. Awaiting wallet confirmation...",
+            `3. Selected client mode: ${modeLabel}\n` +
+            `${hint ? `Hint: ${hint}` : "Awaiting confirmation..."}`,
         );
 
-        setShowApixModal(true);
+        if (clientType === "human") {
+          setShowApixModal(true);
+          showToast("Human mode: wallet modal opened for on-chain payment.", "info");
+        } else {
+          setShowApixModal(false);
+          showToast(`Agent mode: ${fallbackModeMsg}`, "warning");
+        }
       } else {
         setApixTrace("Completed without payment challenge.");
         setApixRaw(payload);
+        setShowApixModal(false);
       }
     } catch (err) {
       setApixTrace("Error: " + err.message);
@@ -139,34 +225,67 @@ const DemoPage = () => {
 
   const confirmApixPayment = async () => {
     if (!paymentDetails) return;
+    if (isProcessingApix) return;
 
-    setIsProcessingApix(true);
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    const flowId = paymentFlowRef.current + 1;
+    paymentFlowRef.current = flowId;
 
     try {
+      setIsProcessingApix(true);
+      await new Promise((resolve) => setTimeout(resolve, 2000));
       const networkLabel = getPaymentNetwork(paymentDetails);
       setApixTrace((prev) => `${prev}\n\n4. Ensuring wallet network: ${networkLabel}`);
-      await ensureWalletChain(paymentDetails);
-
-      const provider = new ethers.BrowserProvider(window.ethereum);
-      const signer = await provider.getSigner();
-      const txResponse = await signer.sendTransaction({
-        to: paymentDetails.recipient,
-        value: paymentDetails.amountWei,
-      });
-
-      setApixTrace(
-        (prev) =>
-          `${prev}\n\n4. Payment sent\nTxHash: ${txResponse.hash}\n5. Verifying...`,
+      const { provider, source } = getPreferredWalletProvider();
+      setApixTrace((prev) => `${prev}\n\n4-1. Using wallet provider: ${source}`);
+      await runWithTimeout(
+        ensureWalletChain(paymentDetails, provider),
+        import.meta.env.VITE_APIX_WALLET_SETUP_TIMEOUT_MS,
+        "Wallet setup timed out. The popup may have been dismissed."
       );
+      if (flowId !== paymentFlowRef.current) return;
 
-      const verifyRes = await verifyPayment(paymentDetails.requestId, txResponse.hash);
+      const browserProvider = new ethers.BrowserProvider(provider);
+      const signer = await browserProvider.getSigner();
+      const txResponse = await runWithTimeout(
+        signer.sendTransaction({
+          to: paymentDetails.recipient,
+          value: paymentDetails.amountWei,
+        }),
+        import.meta.env.VITE_APIX_WALLET_SIGN_TIMEOUT_MS,
+        "Wallet transaction confirmation timed out. The popup may have been closed."
+      );
+      if (flowId !== paymentFlowRef.current) return;
+      await verifyApixTransaction(txResponse.hash, flowId);
+      if (flowId !== paymentFlowRef.current) return;
+    } catch (err) {
+      if (flowId !== paymentFlowRef.current) {
+        return;
+      }
+      markFlowFailed(flowId, err?.message || "Payment failed");
+    } finally {
+      if (flowId === paymentFlowRef.current) {
+        setIsProcessingApix(false);
+      }
+    }
+  };
+
+  const verifyApixTransaction = async (txHash, flowId = paymentFlowRef.current) => {
+    if (!paymentDetails || flowId !== paymentFlowRef.current) return;
+
+    setIsProcessingApix(true);
+    setApixTrace((prev) =>
+      `${prev}\n\n4. Payment hash: ${txHash}\n5. Verifying...`,
+    );
+
+    try {
+      const verifyRes = await verifyPayment(paymentDetails.requestId, txHash, clientType);
       const verifyData = await verifyRes.json();
+      if (flowId !== paymentFlowRef.current) return;
       if (!verifyData?.success || !verifyData?.data?.access_token) {
         if (pendingApixTxnId) {
           updateTransaction(pendingApixTxnId, {
             status: "failed",
-            txHash: txResponse.hash,
+            txHash,
             requestId: paymentDetails.requestId,
             message: `${verifyData?.error?.code || "verification_failed"}: ${verifyData?.error?.message || "Verification failed"}`
               + (verifyData?.error?.retryable ? " (retryable)" : ""),
@@ -179,16 +298,18 @@ const DemoPage = () => {
             + `${verifyData?.error?.message || "Unknown error"}`
             + (verifyData?.error?.retryable ? "\nRetry with a new tx hash." : "")
         );
+        showToast(`Verification failed: ${verifyData?.error?.code || "verification_failed"}`, "error");
         setIsProcessingApix(false);
         return;
       }
 
-      const dataRes = await fetchProxyResource("listing_001", verifyData.data.access_token);
+      const dataRes = await fetchProxyResource("listing_001", verifyData.data.access_token, clientType);
       const data = await dataRes.json();
+      if (flowId !== paymentFlowRef.current) return;
       if (pendingApixTxnId) {
         updateTransaction(pendingApixTxnId, {
           status: dataRes.status >= 200 && dataRes.status < 300 ? "success" : "failed",
-          txHash: txResponse.hash,
+          txHash,
           requestId: paymentDetails.requestId,
           message: dataRes.status >= 200 && dataRes.status < 300
             ? "Payment and data access completed"
@@ -205,6 +326,8 @@ const DemoPage = () => {
         access: data,
       });
       setApixTrace((prev) => `${prev}\n\n6. Access granted.`);
+      showToast("Payment verified and access granted.", "success");
+      setAgentTxHash("");
     } catch (err) {
       if (pendingApixTxnId) {
         updateTransaction(pendingApixTxnId, {
@@ -218,7 +341,45 @@ const DemoPage = () => {
       setApixRaw(null);
       setIsProcessingApix(false);
       setPendingApixTxnId(null);
+      showToast(`Verification failed: ${err.message}`, "error");
+    } finally {
+      if (flowId === paymentFlowRef.current) {
+        setIsProcessingApix(false);
+      }
     }
+  };
+
+  const cancelApixPayment = () => {
+    paymentFlowRef.current += 1;
+    const currentTxnId = pendingApixTxnId;
+
+    setShowApixModal(false);
+    setIsProcessingApix(false);
+    setPendingApixTxnId(null);
+    if (currentTxnId) {
+      updateTransaction(currentTxnId, {
+        status: "failed",
+        txHash: null,
+        requestId: paymentDetails?.requestId || null,
+        message: "Payment flow canceled by user.",
+      });
+    }
+
+    setApixTrace((prev) => `${prev}\n\n4-2. Payment flow was canceled by user.`);
+    showToast("Wallet payment flow canceled.", "warning");
+  };
+
+  const toastClassName = toastType === "success"
+    ? "bg-green-600"
+    : toastType === "warning"
+      ? "bg-amber-500"
+      : toastType === "error"
+        ? "bg-red-600"
+        : "bg-slate-900";
+
+  const verifyTxFromAgent = async () => {
+    if (!paymentDetails || !agentTxHash) return;
+    await verifyApixTransaction(agentTxHash);
   };
 
   return (
@@ -294,11 +455,32 @@ const DemoPage = () => {
 
       <PaymentModal
         isOpen={showApixModal}
-        onClose={() => setShowApixModal(false)}
+        onClose={cancelApixPayment}
         onConfirm={confirmApixPayment}
         paymentDetails={paymentDetails}
         isProcessing={isProcessingApix}
       />
+
+      {toastMessage ? (
+        <div className={`fixed right-5 top-5 z-50 rounded-lg px-4 py-3 text-sm font-medium text-white shadow-lg transition-all duration-300 ${toastClassName}`}>
+          <div className="flex items-start gap-3">
+            <span>{toastMessage}</span>
+            <button
+              type="button"
+              className="text-white/80 transition hover:text-white"
+              onClick={() => {
+                setToastMessage("");
+                if (toastTimerRef.current) {
+                  clearTimeout(toastTimerRef.current);
+                  toastTimerRef.current = null;
+                }
+              }}
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       <section className="panel p-5 reveal md:p-6">
         <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
@@ -310,6 +492,34 @@ const DemoPage = () => {
               Both endpoints return the exact same premium resource. Only the
               payment proof and verification middleware differ.
             </p>
+          </div>
+          <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-1">
+            <button
+              type="button"
+              onClick={() => setClientType("human")}
+              className={`rounded-md px-3 py-2 text-sm font-semibold transition ${clientType === "human"
+                ? "bg-slate-900 text-white"
+                : "text-slate-600 hover:bg-slate-100"
+                }`}
+            >
+              Human Wallet
+            </button>
+            <button
+              type="button"
+              onClick={() => setClientType("agent")}
+              className={`rounded-md px-3 py-2 text-sm font-semibold transition ${clientType === "agent"
+                ? "bg-slate-900 text-white"
+                : "text-slate-600 hover:bg-slate-100"
+                }`}
+            >
+              Agent
+            </button>
+          </div>
+          <div className="grid grid-cols-2 gap-3 text-sm">
+            <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+              <p className="text-slate-500">Client Type</p>
+              <p className="font-bold text-slate-900">{clientType}</p>
+            </div>
           </div>
           <div className="grid grid-cols-2 gap-3 text-sm">
             <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
@@ -396,6 +606,32 @@ const DemoPage = () => {
           </button>
 
           <div className="mt-5">
+            {clientType === "agent" && paymentDetails ? (
+              <div className="space-y-2">
+                <p className="text-xs font-bold uppercase tracking-wide text-slate-500">
+                  Agent Path
+                </p>
+                <p className="mb-2 text-xs text-slate-600">
+                  Submit an external agent tx hash and call verify.
+                </p>
+                <div className="flex items-center gap-2">
+                  <input
+                    value={agentTxHash}
+                    onChange={(event) => setAgentTxHash(event.target.value)}
+                    placeholder="0x...tx_hash"
+                    className="flex-1 rounded-xl border border-slate-300 px-3 py-2.5 outline-none ring-0 transition focus:border-slate-500"
+                  />
+                  <button
+                    onClick={verifyTxFromAgent}
+                    disabled={!agentTxHash || isProcessingApix}
+                    className="btn btn-secondary disabled:opacity-70"
+                  >
+                    Verify Tx Hash
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
             <p className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">
               Flow Trace
             </p>
