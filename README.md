@@ -2,12 +2,15 @@
 
 **APIX turns APIs into paid digital products in minutes, not months.**
 
+**Deployment**
+- Avalanche Testnet (AvaCloud): [explorer-test.avax.network/apix](https://explorer-test.avax.network/apix)
+- Demo deployment : [unloc.kr](https://unloc.kr)
+
 ## TL;DR
 
 - **APIX is a payment middleware for APIs**, built for AI agents and API providers.
 - **Pay-per-call monetization** is enforced with **Avalanche L1** using an **x402-style flow**.
 - **Fast for users, trustable for providers**: quick sessions, on-chain verification, and safe rollback when a request fails.
-- **Already deployed and in use on Avalanche Testnet via AvaCloud**: [https://explorer-test.avax.network/apix](https://explorer-test.avax.network/apix)
 - **Proposal planned**: We will submit ACP-402, a BJWT + ENTITLEMENT-TOKEN quota-access proposal (post-payment entitlement token) as part of the production hardening package: [apiX-402-bjwt-entitlement-token-proposal.md](/home/jylee/omx/APIX/docs/proposals/apiX-402-bjwt-entitlement-token-proposal.md).
 
 ## Why teams choose APIX
@@ -53,6 +56,18 @@ python execution/run_demo.py --verification-rpc-file /path/to/secure-verificatio
 
 Starts backend (`http://localhost:3000`) and frontend, with readiness checks.
 
+For remote hosts (bind frontend publicly), add:
+
+```bash
+python execution/run_demo.py \
+  --backend-host 0.0.0.0 \
+  --frontend-host 0.0.0.0 \
+  --api-base-url http://PUBLIC_IP:3000 \
+  --verification-rpc-file /path/to/secure-verification-rpc.txt
+```
+
+If browser and API are on different hosts (or behind a domain), set `--api-base-url` explicitly and configure `APIX_ALLOWED_ORIGINS` to the frontend origin.
+
 ### Fast local verify
 
 ```bash
@@ -81,7 +96,7 @@ npm run build
 cd ../demo/backend
 cp .env.example .env
 npm install
-npm start
+npm run start:compiled
 
 cd ../demo/frontend
 cp .env.example .env

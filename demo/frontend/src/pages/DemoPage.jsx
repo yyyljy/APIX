@@ -29,6 +29,9 @@ const DemoPage = () => {
   const [toastType, setToastType] = useState("info");
   const toastTimerRef = useRef(null);
   const paymentFlowRef = useRef(0);
+  const paymentPriceLabel = paymentDetails
+    ? `${paymentDetails.amount} ${paymentDetails.currency}`
+    : "0.1 APIX";
 
 // showToast: helper function.
   const showToast = (message, type = "info") => {
@@ -293,10 +296,35 @@ const confirmApixPayment = async () => {
     }
   };
 
+
   // Verify tx hash or existing hash payload to obtain APIX access token.
-// verifyApixTransaction: helper function.
-const verifyApixTransaction = async (txHash, flowId = paymentFlowRef.current) => {
+  // verifyApixTransaction: helper function.
+  const verifyApixTransaction = async (txHash, flowId = paymentFlowRef.current) => {
     if (!paymentDetails || flowId !== paymentFlowRef.current) return;
+
+    const delayMsList = [0, 1000, 2000, 4000];
+    const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const shouldRetry = (error, attemptIndex) => {
+      if (attemptIndex >= delayMsList.length - 1) {
+        return false;
+      }
+
+      if (error?.retryable === true || error?.status === 409) {
+        return true;
+      }
+
+      const code = String(error?.code || "").toLowerCase();
+      const message = String(error?.message || "").toLowerCase();
+      return code === "verification_failed" && message.includes("latest block is behind transaction block");
+    };
+
+    let lastFailure = {
+      code: "verification_failed",
+      message: "Verification failed",
+      retryable: false,
+      request_id: null,
+      status: 403,
+    };
 
     setIsProcessingApix(true);
     setApixTrace((prev) =>
@@ -304,56 +332,92 @@ const verifyApixTransaction = async (txHash, flowId = paymentFlowRef.current) =>
     );
 
     try {
-      const verifyRes = await verifyPayment(paymentDetails.requestId, txHash, clientType);
-      const verifyData = await verifyRes.json();
-      if (flowId !== paymentFlowRef.current) return;
-      if (!verifyData?.success || !verifyData?.data?.access_token) {
-        if (pendingApixTxnId) {
-          updateTransaction(pendingApixTxnId, {
-            status: "failed",
-            txHash,
-            requestId: paymentDetails.requestId,
-            message: `${verifyData?.error?.code || "verification_failed"}: ${verifyData?.error?.message || "Verification failed"}`
-              + (verifyData?.error?.retryable ? " (retryable)" : ""),
-          });
+      for (let attemptIndex = 0; attemptIndex < delayMsList.length; attemptIndex++) {
+        if (attemptIndex > 0) {
+          const delayMs = delayMsList[attemptIndex];
+          setApixTrace((prev) => `${prev}\n\n5. Retrying in ${delayMs / 1000}s ...`);
+          await wait(delayMs);
         }
-        setApixRaw(verifyData);
-        setApixTrace(
-          (prev) =>
-            `${prev}\n\nVerification failed: ${verifyData?.error?.code || "verification_failed"}\n`
-            + `${verifyData?.error?.message || "Unknown error"}`
-            + (verifyData?.error?.retryable ? "\nRetry with a new tx hash." : "")
-        );
-        showToast(`Verification failed: ${verifyData?.error?.code || "verification_failed"}`, "error");
-        setIsProcessingApix(false);
-        return;
+
+        if (flowId !== paymentFlowRef.current) return;
+
+        const verifyRes = await verifyPayment(paymentDetails.requestId, txHash, clientType);
+        const verifyData = await verifyRes.json();
+        if (flowId !== paymentFlowRef.current) return;
+
+        if (verifyRes.status === 200 && verifyData?.success && verifyData?.data?.access_token) {
+          const dataRes = await fetchProxyResource("listing_001", verifyData.data.access_token, clientType);
+          const data = await dataRes.json();
+          if (flowId !== paymentFlowRef.current) return;
+
+          if (pendingApixTxnId) {
+            updateTransaction(pendingApixTxnId, {
+              status: dataRes.status >= 200 && dataRes.status < 300 ? "success" : "failed",
+              txHash,
+              requestId: paymentDetails.requestId,
+              message: dataRes.status >= 200 && dataRes.status < 300
+                ? "Payment and data access completed"
+                : "Data access failed after verification",
+              data: dataRes.status >= 200 && dataRes.status < 300 ? data : null,
+            });
+          }
+
+          setShowApixModal(false);
+          setIsProcessingApix(false);
+          setPendingApixTxnId(null);
+          setApixRaw({
+            verify: verifyData,
+            access: data,
+          });
+          setApixTrace((prev) => `${prev}\n\n6. Access granted.`);
+          showToast("Payment verified and access granted.", "success");
+          setAgentTxHash("");
+          return;
+        }
+
+        const errorPayload = verifyData?.error || {};
+        lastFailure = {
+          code: errorPayload?.code || verifyData?.code || "verification_failed",
+          message: errorPayload?.message || verifyData?.message || "Verification failed",
+          retryable: Boolean(errorPayload?.retryable),
+          request_id: verifyData?.request_id || verifyData?.requestId || paymentDetails.requestId,
+          status: verifyData?.status || verifyRes.status || 403,
+        };
+
+        setApixRaw({
+          success: false,
+          error: {
+            code: lastFailure.code,
+            message: lastFailure.message,
+            retryable: lastFailure.retryable,
+            request_id: lastFailure.request_id,
+            status: lastFailure.status,
+            details: verifyData?.details || errorPayload?.details || null,
+          },
+        });
+
+        if (!shouldRetry(errorPayload, attemptIndex)) {
+          break;
+        }
       }
 
-      const dataRes = await fetchProxyResource("listing_001", verifyData.data.access_token, clientType);
-      const data = await dataRes.json();
-      if (flowId !== paymentFlowRef.current) return;
       if (pendingApixTxnId) {
         updateTransaction(pendingApixTxnId, {
-          status: dataRes.status >= 200 && dataRes.status < 300 ? "success" : "failed",
+          status: "failed",
           txHash,
           requestId: paymentDetails.requestId,
-          message: dataRes.status >= 200 && dataRes.status < 300
-            ? "Payment and data access completed"
-            : "Data access failed after verification",
-          data: dataRes.status >= 200 && dataRes.status < 300 ? data : null,
+          message: `${lastFailure.code}: ${lastFailure.message}` + (lastFailure.retryable ? " (retryable)" : ""),
         });
       }
 
-      setShowApixModal(false);
-      setIsProcessingApix(false);
+      setApixTrace(
+        (prev) =>
+          `${prev}\n\nVerification failed: ${lastFailure.code}\n${lastFailure.message}`
+          + (lastFailure.retryable ? "\nRetry with a new tx hash." : "")
+      );
+      showToast(`Verification failed: ${lastFailure.code}`, "error");
       setPendingApixTxnId(null);
-      setApixRaw({
-        verify: verifyData,
-        access: data,
-      });
-      setApixTrace((prev) => `${prev}\n\n6. Access granted.`);
-      showToast("Payment verified and access granted.", "success");
-      setAgentTxHash("");
+      return;
     } catch (err) {
       if (pendingApixTxnId) {
         updateTransaction(pendingApixTxnId, {
@@ -374,6 +438,8 @@ const verifyApixTransaction = async (txHash, flowId = paymentFlowRef.current) =>
       }
     }
   };
+
+  // Cancel current payment flow and update status immediately.
 
   // Cancel current payment flow and update status immediately.
 // cancelApixPayment: helper function.
@@ -558,7 +624,7 @@ const cancelApixPayment = () => {
             </div>
             <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
               <p className="text-slate-500">Pricing Unit</p>
-              <p className="font-bold text-slate-900">$10 / 10 AVAX</p>
+              <p className="font-bold text-slate-900">{paymentPriceLabel}</p>
             </div>
           </div>
         </div>
@@ -632,7 +698,7 @@ const cancelApixPayment = () => {
             onClick={initiateApixFlow}
             className="btn btn-primary mt-5 w-full"
           >
-            Buy with Crypto (10 AVAX)
+            {`Buy with Crypto (${paymentPriceLabel})`}
           </button>
 
           <div className="mt-5">

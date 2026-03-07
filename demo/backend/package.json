@@ -3,8 +3,12 @@
   "version": "1.0.0",
   "description": "",
   "main": "index.ts",
+  "engines": {
+    "node": ">=24 <25"
+  },
   "scripts": {
     "start": "tsx index.ts",
+    "start:compiled": "esbuild index.ts --bundle --platform=node --format=cjs --target=node24 --outfile=dist/index.js && node dist/index.js",
     "test": "NODE_ENV=test tsc index.ts index.test.ts --module commonjs --target es2020 --esModuleInterop --outDir .test-dist && node .test-dist/index.test.js && node -e \"require('fs').rmSync('.test-dist',{recursive:true,force:true})\""
   },
   "keywords": [],
@@ -23,6 +27,7 @@
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^25.2.0",
     "@types/supertest": "^6.0.3",
+    "esbuild": "^0.27.2",
     "jsonwebtoken": "^9.0.2",
     "supertest": "^7.1.4",
     "tsx": "^4.21.0",

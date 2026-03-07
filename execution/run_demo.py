@@ -126,11 +126,23 @@ def ensure_frontend_ready(cwd: str, npm_bin: str, env: dict) -> None:
 
 def ensure_backend_ready(cwd: str, npm_bin: str, env: dict) -> None:
     candidates = [
-        os.path.join(cwd, "node_modules", ".bin", "tsx"),
-        os.path.join(cwd, "node_modules", ".bin", "tsx.cmd")
+        os.path.join(cwd, "node_modules", ".bin", "esbuild"),
+        os.path.join(cwd, "node_modules", ".bin", "esbuild.cmd")
     ]
     if any(os.path.isfile(candidate) for candidate in candidates):
-        return
+        sdk_node_modules = os.path.join(os.path.dirname(cwd), "apix-sdk-node", "node_modules", "axios", "package.json")
+        if os.path.isfile(sdk_node_modules):
+            return
+
+    sdk_dir = os.path.join(os.path.dirname(cwd), "apix-sdk-node")
+    if os.path.isfile(os.path.join(sdk_dir, "package.json")):
+        print("SDK dependencies not installed; running npm install (apix-sdk-node)...")
+        subprocess.run(
+            [npm_bin, "install"],
+            cwd=sdk_dir,
+            env=env,
+            check=True
+        )
 
     print("Backend dependencies not installed; running npm install (demo/backend)...")
     subprocess.run(
@@ -183,6 +195,9 @@ def run_demo():
     parser.add_argument("--jwt-secret", default="", help="Shared JWT secret used by backend.")
     parser.add_argument("--allowed-origins", default="", help="Comma-separated CORS allowlist for backend.")
     parser.add_argument("--skip-frontend", action="store_true", help="Skip starting Vite frontend server.")
+    parser.add_argument("--frontend-host", default="", help="Vite host binding (for remote access), e.g. 0.0.0.0.")
+    parser.add_argument("--backend-host", default="", help="Backend host binding (for remote access), e.g. 0.0.0.0.")
+    parser.add_argument("--api-base-url", default="", help="Frontend base API URL override, e.g. http://PUBLIC_IP:3000.")
     parser.add_argument("--readiness-timeout", type=int, default=45, help="Seconds to wait for each service health check.")
     args = parser.parse_args()
 
@@ -219,9 +234,9 @@ def run_demo():
     env.setdefault("APIX_CHAIN_ID", "43114")
     env.setdefault("APIX_NETWORK", "eip155:43114")
     env.setdefault("APIX_PAYMENT_CURRENCY", "AVAX")
-    env.setdefault("APIX_PAYMENT_AMOUNT", "0.100000000000000000")
+    env.setdefault("APIX_PAYMENT_AMOUNT", "0.1")
     env.setdefault("APIX_PAYMENT_AMOUNT_WEI", "100000000000000000")
-    env.setdefault("APIX_PAYMENT_RECIPIENT", "0x71C7656EC7ab88b098defB751B7401B5f6d8976F")
+    env.setdefault("APIX_PAYMENT_RECIPIENT", "0x0B3F82F42d05cEb8E4b33180Af782c0ccbDB25FC")
     env["APIX_ALLOWED_ORIGINS"] = args.allowed_origins
     env.setdefault("VITE_API_BASE_URL", "http://localhost:3000")
     env.setdefault("VITE_AVALANCHE_CHAIN_ID", "43114")
@@ -230,6 +245,11 @@ def run_demo():
     env.setdefault("VITE_AVALANCHE_BLOCK_EXPLORER", "https://snowtrace.io")
     env.setdefault("APIX_SESSION_STORE_PATH", os.path.abspath(".tmp/apix-session-store.json"))
     env.setdefault("APIX_VERIFICATION_STORE_PATH", os.path.abspath(".tmp/apix-verification-store.json"))
+    if args.api_base_url.strip():
+        env["VITE_API_BASE_URL"] = args.api_base_url.strip()
+    backend_host = args.backend_host.strip()
+    if backend_host:
+        env["APIX_HOST"] = backend_host
 
     verification_rpc_url = resolve_verification_rpc_url(env, args.verification_rpc_file)
     if not verification_rpc_url:
@@ -254,20 +274,27 @@ def run_demo():
     try:
         ensure_backend_ready(backend_dir, npm_bin, env)
 
-        print("Starting Demo Backend (Node)...")
-        p2 = subprocess.Popen([npm_bin, "start"], cwd=backend_dir, env=env)
+        print("Starting Demo Backend (Node, compiled)...")
+        p2 = subprocess.Popen([npm_bin, "run", "start:compiled"], cwd=backend_dir, env=env)
         processes.append(p2)
         process_labels.append("demo-backend")
         
         if not args.skip_frontend:
             ensure_frontend_ready(frontend_dir, npm_bin, env)
             print("Starting Demo Frontend (Vite)...")
-            p3 = subprocess.Popen([npm_bin, "run", "dev"], cwd=frontend_dir, env=env)
+            frontend_cmd = [npm_bin, "run", "dev"]
+            if args.frontend_host.strip():
+                env["HOST"] = args.frontend_host.strip()
+                frontend_cmd.extend(["--", "--host", args.frontend_host.strip()])
+            p3 = subprocess.Popen(frontend_cmd, cwd=frontend_dir, env=env)
             processes.append(p3)
             process_labels.append("demo-frontend")
 
+        backend_urls = ["http://127.0.0.1:3000/health", "http://localhost:3000/health"]
+        if backend_host and backend_host not in ["127.0.0.1", "localhost"]:
+            backend_urls.insert(0, f"http://{backend_host}:3000/health")
         wait_for_http_ready(
-            ["http://127.0.0.1:3000/health", "http://localhost:3000/health"],
+            backend_urls,
             timeout_seconds=args.readiness_timeout,
             label="demo-backend"
         )
@@ -294,7 +321,7 @@ def run_demo():
             else:
                 try:
                     wait_for_http_ready(
-                        ["http://127.0.0.1:3000/health", "http://localhost:3000/health"],
+                        backend_urls,
                         timeout_seconds=5,
                         label="demo-backend"
                     )

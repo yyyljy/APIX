@@ -1,47 +1,31 @@
-import express, { Request, Response, NextFunction } from 'express';
-import cors from 'cors';
-import { ApixMiddleware } from 'apix-sdk-node';
-import crypto from 'crypto';
-import dotenv from 'dotenv';
-
-dotenv.config();
-
-const app = express();
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.app = void 0;
+const express_1 = __importDefault(require("express"));
+const cors_1 = __importDefault(require("cors"));
+const apix_sdk_node_1 = require("apix-sdk-node");
+const crypto_1 = __importDefault(require("crypto"));
+const dotenv_1 = __importDefault(require("dotenv"));
+dotenv_1.default.config();
+const app = (0, express_1.default)();
+exports.app = app;
 const port = 3000;
-const bindHost = (process.env.APIX_HOST || 'localhost').trim() || 'localhost';
 const startedAtMs = Date.now();
 let metricsToken = (process.env.APIX_METRICS_TOKEN || '').trim();
 const allowedOriginsRaw = process.env.APIX_ALLOWED_ORIGINS || 'http://localhost:5173,http://127.0.0.1:5173';
 const allowAnyOrigin = allowedOriginsRaw.split(',').map((value) => value.trim()).includes('*');
-const allowedOrigins = new Set(
-    allowedOriginsRaw
-        .split(',')
-        .map((value) => value.trim())
-        .filter((value) => value && value !== '*')
-);
-
-
-
-
+const allowedOrigins = new Set(allowedOriginsRaw
+    .split(',')
+    .map((value) => value.trim())
+    .filter((value) => value && value !== '*'));
 if (!metricsToken || metricsToken.toLowerCase() === 'change-this-token') {
-    metricsToken = crypto.randomBytes(24).toString('hex');
+    metricsToken = crypto_1.default.randomBytes(24).toString('hex');
     console.warn('APIX_METRICS_TOKEN was missing or placeholder. Generated an ephemeral token for this process.');
 }
-
-type RouteMetric = {
-    count: number;
-    errorCount: number;
-    totalLatencyMs: number;
-    maxLatencyMs: number;
-};
-
-type ApiErrorDefinition = {
-    status: number;
-    message: string;
-    retryable: boolean;
-};
-
-const API_ERROR_DEFINITIONS: Record<string, ApiErrorDefinition> = {
+const API_ERROR_DEFINITIONS = {
     cors_origin_not_allowed: {
         status: 403,
         message: "Origin is not allowed by CORS policy.",
@@ -138,15 +122,13 @@ const API_ERROR_DEFINITIONS: Record<string, ApiErrorDefinition> = {
         retryable: true
     }
 };
-
 const metrics = {
     totalRequests: 0,
     totalErrors: 0,
-    statusCounts: new Map<string, number>(),
-    routeStats: new Map<string, RouteMetric>()
+    statusCounts: new Map(),
+    routeStats: new Map()
 };
-
-app.use(cors({
+app.use((0, cors_1.default)({
     origin: (origin, callback) => {
         if (!origin || allowAnyOrigin || allowedOrigins.has(origin)) {
             callback(null, true);
@@ -155,20 +137,9 @@ app.use(cors({
         callback(new Error('Origin not allowed by CORS policy'));
     }
 }));
-app.use(express.json());
-
+app.use(express_1.default.json());
 // Initialize Apix SDK
-const apixConfig: {
-    jwtSecret?: string;
-    apiKey?: string;
-    rpcUrl?: string;
-    rpcTimeoutMs?: number;
-    rpcMaxRetries?: number;
-    defaultMinConfirmations?: number;
-    jwtTtlSeconds?: number;
-    jwtIssuer?: string;
-    jwtKid?: string;
-} = {};
+const apixConfig = {};
 if (process.env.APIX_JWT_SECRET) {
     apixConfig.jwtSecret = process.env.APIX_JWT_SECRET;
 }
@@ -208,10 +179,9 @@ if (process.env.APIX_JWT_ISSUER) {
 if (process.env.APIX_JWT_KID) {
     apixConfig.jwtKid = process.env.APIX_JWT_KID;
 }
-const apix = new ApixMiddleware(apixConfig);
-
+const apix = new apix_sdk_node_1.ApixMiddleware(apixConfig);
 // parsePositiveInt: helper function.
-const parsePositiveInt = (value: string | undefined, fallback: number): number => {
+const parsePositiveInt = (value, fallback) => {
     const trimmed = (value || '').trim();
     const parsed = Number.parseInt(trimmed, 10);
     if (!Number.isFinite(parsed) || parsed <= 0) {
@@ -219,23 +189,20 @@ const parsePositiveInt = (value: string | undefined, fallback: number): number =
     }
     return parsed;
 };
-
 // normalizeChainId: helper function.
-const normalizeChainId = (value: string | number | undefined, fallback: number): number => {
+const normalizeChainId = (value, fallback) => {
     if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
         return Math.floor(value);
     }
     return parsePositiveInt(typeof value === 'string' ? value : '', fallback);
 };
-
 // parseAmountWei: helper function.
-const parseAmountWei = (value: string | undefined, fallback: string): string => {
+const parseAmountWei = (value, fallback) => {
     const trimmed = (value || '').trim();
     return /^\d+$/.test(trimmed) ? trimmed : fallback;
 };
-
 // normalizeNetwork: helper function.
-const normalizeNetwork = (rawNetwork: string | undefined, chainId: number): string => {
+const normalizeNetwork = (rawNetwork, chainId) => {
     const trimmed = (rawNetwork || '').trim();
     if (!trimmed) {
         return `eip155:${chainId}`;
@@ -251,21 +218,19 @@ const normalizeNetwork = (rawNetwork: string | undefined, chainId: number): stri
     }
     return `eip155:${chainId}`;
 };
-
 // parseNetworkChainId: helper function.
-const parseNetworkChainId = (network: string): number => {
+const parseNetworkChainId = (network) => {
     const match = /^eip155:(\d+)$/.exec((network || '').trim());
-    if (!match) return 0;
+    if (!match)
+        return 0;
     return normalizeChainId(match[1], 0);
 };
-
 const configuredChainId = parsePositiveInt(process.env.APIX_CHAIN_ID, 43114);
 const configuredNetwork = normalizeNetwork(process.env.APIX_NETWORK, configuredChainId);
 const paymentChainId = parseNetworkChainId(configuredNetwork) || configuredChainId;
 if (paymentChainId !== configuredChainId) {
     console.warn(`APIX_CHAIN_ID=${configuredChainId} and APIX_NETWORK=${configuredNetwork} mismatch; deriving chain_id from network as ${paymentChainId}.`);
 }
-
 const PAYMENT_PROFILE = {
     chainId: paymentChainId,
     network: configuredNetwork,
@@ -275,11 +240,8 @@ const PAYMENT_PROFILE = {
     recipient: (process.env.APIX_PAYMENT_RECIPIENT || '0x0B3F82F42d05cEb8E4b33180Af782c0ccbDB25FC').trim(),
     minConfirmations: parsePositiveInt(process.env.APIX_MIN_CONFIRMATIONS, 1)
 };
-
-type ClientType = 'human' | 'agent';
-
 // parseClientType: helper function.
-const parseClientType = (rawType: string | undefined): ClientType => {
+const parseClientType = (rawType) => {
     if (!rawType) {
         return 'human';
     }
@@ -289,9 +251,8 @@ const parseClientType = (rawType: string | undefined): ClientType => {
     }
     return 'human';
 };
-
 // extractClientType: helper function.
-const extractClientType = (req: Request): ClientType => {
+const extractClientType = (req) => {
     const headerCandidates = [
         'x-apix-client-type',
         'apix-client-type',
@@ -306,9 +267,8 @@ const extractClientType = (req: Request): ClientType => {
     }
     return 'human';
 };
-
 // getClientTypeHint: helper function.
-const getClientTypeHint = (clientType: ClientType) => {
+const getClientTypeHint = (clientType) => {
     if (clientType === 'agent') {
         return {
             payment_flow: 'agent_submit_tx_hash',
@@ -334,18 +294,12 @@ const getClientTypeHint = (clientType: ClientType) => {
         channels: ['evm_wallet']
     };
 };
-
-const sendError = (
-    res: Response,
-    code: string,
-    options?: { status?: number; message?: string; retryable?: boolean; requestId?: string; }
-) => {
+const sendError = (res, code, options) => {
     const definition = API_ERROR_DEFINITIONS[code];
     const status = options?.status ?? definition?.status ?? 500;
     const message = options?.message ?? definition?.message ?? code;
     const retryable = options?.retryable ?? definition?.retryable ?? false;
     const requestId = options?.requestId;
-
     res.status(status).json({
         error: status >= 500 ? "Internal Error" : "Request Failed",
         code,
@@ -355,40 +309,37 @@ const sendError = (
     });
 };
 // getOrCreateRequestId: helper function.
-const getOrCreateRequestId = (req: Request): string => {
+const getOrCreateRequestId = (req) => {
     const fromHeader = req.header('X-Request-ID');
-    if (fromHeader && fromHeader.trim()) return fromHeader.trim();
-    return `req_${crypto.randomUUID()}`;
+    if (fromHeader && fromHeader.trim())
+        return fromHeader.trim();
+    return `req_${crypto_1.default.randomUUID()}`;
 };
-
 // logEvent: helper function.
-const logEvent = (event: string, fields: Record<string, unknown>) => {
+const logEvent = (event, fields) => {
     console.log(JSON.stringify({
         ts: new Date().toISOString(),
         event,
         ...fields
     }));
 };
-
-app.use((req: Request, res: Response, next: NextFunction) => {
+app.use((req, res, next) => {
     const requestId = getOrCreateRequestId(req);
-    (req as any).requestId = requestId;
+    req.requestId = requestId;
     res.setHeader('X-Request-ID', requestId);
     next();
 });
-
-app.use((req: Request, res: Response, next: NextFunction) => {
+app.use((req, res, next) => {
     const startedAt = Date.now();
     res.on('finish', () => {
         const latencyMs = Date.now() - startedAt;
         const statusKey = String(res.statusCode);
         const routeKey = `${req.method} ${req.path}`;
         const isError = res.statusCode >= 400;
-
         metrics.totalRequests += 1;
-        if (isError) metrics.totalErrors += 1;
+        if (isError)
+            metrics.totalErrors += 1;
         metrics.statusCounts.set(statusKey, (metrics.statusCounts.get(statusKey) || 0) + 1);
-
         const existingRouteStats = metrics.routeStats.get(routeKey) || {
             count: 0,
             errorCount: 0,
@@ -396,13 +347,13 @@ app.use((req: Request, res: Response, next: NextFunction) => {
             maxLatencyMs: 0
         };
         existingRouteStats.count += 1;
-        if (isError) existingRouteStats.errorCount += 1;
+        if (isError)
+            existingRouteStats.errorCount += 1;
         existingRouteStats.totalLatencyMs += latencyMs;
         existingRouteStats.maxLatencyMs = Math.max(existingRouteStats.maxLatencyMs, latencyMs);
         metrics.routeStats.set(routeKey, existingRouteStats);
-
         logEvent("http.request_completed", {
-            request_id: (req as any).requestId,
+            request_id: req.requestId,
             method: req.method,
             path: req.path,
             status: res.statusCode,
@@ -411,8 +362,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
     });
     next();
 });
-
-app.get('/health', (_req: Request, res: Response) => {
+app.get('/health', (_req, res) => {
     res.json({
         status: "ok",
         service: "demo-backend",
@@ -420,14 +370,12 @@ app.get('/health', (_req: Request, res: Response) => {
         timestamp: new Date().toISOString()
     });
 });
-
-app.get('/metrics', (_req: Request, res: Response) => {
+app.get('/metrics', (_req, res) => {
     const authHeader = String(_req.headers['authorization'] || '');
     if (authHeader !== `Bearer ${metricsToken}`) {
         sendError(res, "metrics_unauthorized", { requestId: getOrCreateRequestId(_req) });
         return;
     }
-
     const routeMetrics = Array.from(metrics.routeStats.entries()).map(([route, values]) => ({
         route,
         count: values.count,
@@ -435,7 +383,6 @@ app.get('/metrics', (_req: Request, res: Response) => {
         avg_latency_ms: values.count > 0 ? Math.round(values.totalLatencyMs / values.count) : 0,
         max_latency_ms: values.maxLatencyMs
     }));
-
     res.json({
         service: "demo-backend",
         uptime_seconds: Math.floor((Date.now() - startedAtMs) / 1000),
@@ -450,30 +397,32 @@ app.get('/metrics', (_req: Request, res: Response) => {
         routes: routeMetrics
     });
 });
-
 // parsePaymentSignature: helper function.
-const parsePaymentSignature = (value: string): string => {
+const parsePaymentSignature = (value) => {
     const raw = value.trim();
-    if (!raw) return '';
-    if (raw.startsWith('0x')) return raw;
-
+    if (!raw)
+        return '';
+    if (raw.startsWith('0x'))
+        return raw;
     const txHashMatch = raw.match(/tx_hash=([0-9a-zA-Zx]+)/i);
-    if (txHashMatch?.[1]) return txHashMatch[1];
-
+    if (txHashMatch?.[1])
+        return txHashMatch[1];
     try {
         const parsed = JSON.parse(raw);
-        if (typeof parsed?.txHash === 'string') return parsed.txHash;
-        if (typeof parsed?.tx_hash === 'string') return parsed.tx_hash;
-    } catch (_err) {
+        if (typeof parsed?.txHash === 'string')
+            return parsed.txHash;
+        if (typeof parsed?.tx_hash === 'string')
+            return parsed.tx_hash;
+    }
+    catch (_err) {
         // Keep parsing fallbacks only.
     }
     return '';
 };
-
 // extractPaymentProof: helper function.
-const extractPaymentProof = (req: Request): string => {
-// normalizeHeaderValue: helper function.
-const normalizeHeaderValue = (value: string | string[] | undefined): string => {
+const extractPaymentProof = (req) => {
+    // normalizeHeaderValue: helper function.
+    const normalizeHeaderValue = (value) => {
         if (typeof value === 'string') {
             return value.trim();
         }
@@ -487,56 +436,48 @@ const normalizeHeaderValue = (value: string | string[] | undefined): string => {
         }
         return '';
     };
-
     const authHeader = normalizeHeaderValue(req.headers['authorization']);
     if (authHeader && authHeader.toLowerCase().startsWith('apix ')) {
         const token = authHeader.substring(authHeader.indexOf(' ') + 1);
-        if (token) return token.trim();
+        if (token)
+            return token.trim();
     }
-
     const paymentSignature = normalizeHeaderValue(req.headers['payment-signature']);
     if (typeof paymentSignature === 'string') {
         return parsePaymentSignature(paymentSignature);
     }
     return '';
 };
-
 // --- CORE BUSINESS LOGIC ---
 // getPremiumData: helper function.
 const getPremiumData = () => {
-    const amountLabel = `${PAYMENT_PROFILE.amount} ${PAYMENT_PROFILE.currency}`;
     return {
         id: "premium-item-unique-id",
         name: "High-Value Market Insight",
-        price: `Pay ${amountLabel}`,
+        price: "$10.00 / 10 AVAX",
         content: "This is the exclusive data payload. It is the SAME content regardless of payment method.",
         timestamp: new Date().toISOString()
     };
 };
-
 // --- MIDDLEWARES ---
-
 // Mock Stripe Middleware
 // stripeMiddleware: helper function.
-const stripeMiddleware = (req: Request, res: Response, next: NextFunction) => {
+const stripeMiddleware = (req, res, next) => {
     const authHeader = req.headers['authorization'];
-
     // Simulate typical Bearer token check
     if (!authHeader || !authHeader.startsWith('Bearer stripe_')) {
-        sendError(res, "invalid_stripe_session", { requestId: (req as any).requestId });
+        sendError(res, "invalid_stripe_session", { requestId: req.requestId });
         return;
     }
-
     // Mock validation success
     console.log("Stripe Middleware: Payment Verified via Session Token");
     next();
 };
-
 // Apix Middleware Wrapper
 // apixMiddlewareWrapper: helper function.
-const apixMiddlewareWrapper = async (req: Request, res: Response, next: NextFunction) => {
+const apixMiddlewareWrapper = async (req, res, next) => {
     const token = extractPaymentProof(req);
-    const requestId = (req as any).requestId || getOrCreateRequestId(req);
+    const requestId = req.requestId || getOrCreateRequestId(req);
     const clientType = extractClientType(req);
     const paymentDetails = {
         requestId,
@@ -548,10 +489,6 @@ const apixMiddlewareWrapper = async (req: Request, res: Response, next: NextFunc
         recipient: PAYMENT_PROFILE.recipient,
         minConfirmations: PAYMENT_PROFILE.minConfirmations
     };
-
-
-
-
     if (!token) {
         // Standard x402/L402 Pattern: Return WWW-Authenticate header
         const paymentResponse = apix.createPaymentRequest(paymentDetails);
@@ -569,23 +506,16 @@ const apixMiddlewareWrapper = async (req: Request, res: Response, next: NextFunc
             client_type: clientType,
             ...paymentHint
         };
-
         res.set(paymentResponse.headers);
         res.status(402).json(paymentBody);
         return;
     }
-
     let validToken = '';
-
     // Heuristic: If token starts with 0x, treat as TxHash (Delegated Verification)
     // Otherwise treat as JWT (Session Validation)
     if (token.startsWith('0x') && token.length < 100) {
         logEvent("apix.verify_started", { request_id: requestId, tx_hash: token, client_type: clientType });
         const result = await apix.verifyPayment(token, paymentDetails);
-
-
-
-
         if (!result.success || !result.token) {
             logEvent("apix.verify_failed", {
                 request_id: requestId,
@@ -594,28 +524,25 @@ const apixMiddlewareWrapper = async (req: Request, res: Response, next: NextFunc
                 retryable: result.retryable ?? false,
                 message: result.message || "Apix verification failed."
             });
-            sendError(
-                res,
-                result.code || "apix_verification_failed",
-                {
-                    retryable: result.retryable ?? undefined,
-                    requestId: result.requestId || paymentDetails.requestId,
-                    message: result.message
-                }
-            );
+            sendError(res, result.code || "apix_verification_failed", {
+                retryable: result.retryable ?? undefined,
+                requestId: result.requestId || paymentDetails.requestId,
+                message: result.message
+            });
             return;
         }
         validToken = result.token;
-    } else {
+    }
+    else {
         // JWT Validation
         if (await apix.validateSessionState(token)) {
             validToken = token;
-        } else {
+        }
+        else {
             sendError(res, "invalid_apix_session", { requestId: paymentDetails.requestId });
             return;
         }
     }
-
     // Atomic Deduction Logic: Start Request
     const sessionStart = await apix.startRequestStateWithResult(validToken);
     if (!sessionStart.started) {
@@ -637,19 +564,15 @@ const apixMiddlewareWrapper = async (req: Request, res: Response, next: NextFunc
         }
         return;
     }
-
     // Hook into response finish to commit/rollback
     let quotaFinalized = false;
-// finalizeQuota: helper function.
-const finalizeQuota = () => {
-        if (quotaFinalized) return;
+    // finalizeQuota: helper function.
+    const finalizeQuota = () => {
+        if (quotaFinalized)
+            return;
         quotaFinalized = true;
-
-
-
-
         if (res.statusCode >= 200 && res.statusCode < 300) {
-            void apix.commitRequestState(validToken).catch((error: any) => {
+            void apix.commitRequestState(validToken).catch((error) => {
                 logEvent("apix.quota_commit_failed", {
                     request_id: requestId,
                     message: String(error?.message || error || 'unknown_error')
@@ -657,7 +580,7 @@ const finalizeQuota = () => {
             });
             return;
         }
-        void apix.rollbackRequestState(validToken).catch((error: any) => {
+        void apix.rollbackRequestState(validToken).catch((error) => {
             logEvent("apix.quota_rollback_failed", {
                 request_id: requestId,
                 message: String(error?.message || error || 'unknown_error')
@@ -667,67 +590,34 @@ const finalizeQuota = () => {
             console.log("Apix: Request Rolled Back (Quota Refunded)");
         }
     };
-
     res.on('finish', finalizeQuota);
     res.on('close', finalizeQuota);
-
     // Inject proof (JWT) so controller can return it to client
-    (req as any).apixProof = validToken;
+    req.apixProof = validToken;
     next();
 };
-
 // --- ENDPOINTS ---
-
 // 1. Stripe Endpoint
-app.get('/stripe-product', stripeMiddleware, (req: Request, res: Response) => {
-    logEvent("stripe.request", { request_id: (req as any).requestId, path: req.path });
+app.get('/stripe-product', stripeMiddleware, (req, res) => {
+    logEvent("stripe.request", { request_id: req.requestId, path: req.path });
     const data = getPremiumData();
     res.json({
         method: "Stripe",
         ...data
     });
 });
-
 // 2. Apix Endpoint
-app.get('/apix-product', apixMiddlewareWrapper, (req: Request, res: Response) => {
-    logEvent("apix.request_success", { request_id: (req as any).requestId, path: req.path });
+app.get('/apix-product', apixMiddlewareWrapper, (req, res) => {
+    logEvent("apix.request_success", { request_id: req.requestId, path: req.path });
     const data = getPremiumData();
     res.json({
         method: "Apix",
-        proof: (req as any).apixProof,
+        proof: req.apixProof,
         ...data
     });
 });
-
-export { app };
-
 if (process.env.NODE_ENV !== 'test') {
-    const server = app.listen(port, bindHost, () => {
-        console.log(`Demo Server running at http://${bindHost}:${port}`);
+    app.listen(port, () => {
+        console.log(`Demo Server running at http://localhost:${port}`);
     });
-
-    server.on('error', (error) => {
-        console.error('Demo Server startup error:', {
-            code: (error as any).code,
-            syscall: (error as any).syscall,
-            address: (error as any).address,
-            port: (error as any).port,
-            message: (error as any).message
-        });
-        process.exit(1);
-    });
-
-    // Keep process alive in constrained runtime environments where an
-    // otherwise-unreferenced server handle can be garbage-collected.
-    process.stdin.resume();
-
-    const shutdown = (signal: string) => {
-        console.log(`Demo Server shutting down via ${signal}`);
-        server.close(() => {
-            process.exit(0);
-        });
-    };
-
-    process.on('SIGINT', () => shutdown('SIGINT'));
-    process.on('SIGTERM', () => shutdown('SIGTERM'));
 }

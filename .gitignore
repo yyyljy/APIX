@@ -31,3 +31,5 @@ vendor/
 apix-sdk-node/apix-sdk-node-1.0.0.tgz
 
 .omx
+deploy-*.sh
+demo/frontend/.env.production

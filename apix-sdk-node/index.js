@@ -419,7 +419,6 @@ class ApixMiddleware {
             amount_wei: payment.amountWei,
             chain_id: payment.chainId,
             currency: payment.currency,
-            iss: this.jwtIssuer
         }, this.jwtSecret, signOptions);
         const decoded = jwt.verify(token, this.jwtSecret, { issuer: this.jwtIssuer });
         return { token, claims: decoded };
