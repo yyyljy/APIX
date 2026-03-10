@@ -3,7 +3,7 @@ const http = require('http');
 const options = {
     hostname: 'localhost',
     port: 3000,
-    path: '/apix-product',
+    path: process.env.APIX_VERIFY_PATH || '/apix-product',
     method: 'GET',
 };
 

@@ -73,7 +73,7 @@ This is written for SDK developers and assumes that a seller backend is required
 
 ### 5.2 Backend (`demo/backend`) changes
 
-- Keep the existing middleware entry point (`/apix-product`).
+- Use explicit protected routes: human path (`/apix-product`) and agent path (`/agent-apix-product`).
 - Keep the existing 402 return / session start / commit / rollback calls.
 - Reflect direct L1 validation parameters in `ApixMiddleware` settings:
   - `rpcUrl`, `rpcTimeoutMs`, `rpcMaxRetries`, `defaultMinConfirmations`
@@ -156,7 +156,7 @@ So the implementation must adopt all of the above directly.
   - Verify payment tx
   - Control session, quota, replay
 - Backend responsibilities:
-  - Route protected resources (e.g., `/apix-product`) and enforce policies
+- Route protected resources (e.g., `/apix-product` for human, `/agent-apix-product` for agent flows) and enforce policies
   - Execute commit/rollback hooks at response boundaries (current code reference: `finalizeQuota`)
 
 Current code evidence:

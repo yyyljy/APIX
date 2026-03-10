@@ -33,6 +33,8 @@ npm run dev
     *   Returns the premium data.
 3.  **Apix Payment (Right):** Click "Buy with Crypto".
     *   Simulates a Web3 payment flow.
-    *   Sends a mock Tx Hash to `/apix-product`.
+    *   Sends a mock Tx Hash to `/apix-product` (human mode).
+    *   Agent mode should target `/agent-apix-product`.
+    *   No client-type headers are used.
     *   Apix SDK verifies it directly against L1.
     *   Returns the **same** premium data via the middleware.

@@ -1,0 +1,21 @@
+{
+  "name": "x402-payment-apix-evm",
+  "version": "1.0.0",
+  "description": "x402 payment helper for APIX protected endpoints",
+  "type": "commonjs",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && npx @vercel/ncc build dist/index.js -o dist",
+    "start": "node dist/index.js"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "ethers": "^6.13.2"
+  },
+  "devDependencies": {
+    "@vercel/ncc": "^0.38.1",
+    "ts-node": "^10.9.1",
+    "typescript": "^5.4.5",
+    "@types/node": "^20.12.7"
+  }
+}

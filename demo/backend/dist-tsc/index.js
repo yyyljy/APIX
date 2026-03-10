@@ -13,6 +13,7 @@ dotenv_1.default.config();
 const app = (0, express_1.default)();
 exports.app = app;
 const port = 3000;
+const bindHost = (process.env.APIX_HOST || 'localhost').trim() || 'localhost';
 const startedAtMs = Date.now();
 let metricsToken = (process.env.APIX_METRICS_TOKEN || '').trim();
 const allowedOriginsRaw = process.env.APIX_ALLOWED_ORIGINS || 'http://localhost:5173,http://127.0.0.1:5173';
@@ -180,119 +181,58 @@ if (process.env.APIX_JWT_KID) {
     apixConfig.jwtKid = process.env.APIX_JWT_KID;
 }
 const apix = new apix_sdk_node_1.ApixMiddleware(apixConfig);
-// parsePositiveInt: helper function.
-const parsePositiveInt = (value, fallback) => {
-    const trimmed = (value || '').trim();
-    const parsed = Number.parseInt(trimmed, 10);
-    if (!Number.isFinite(parsed) || parsed <= 0) {
-        return fallback;
-    }
-    return parsed;
+const PAYMENT_DISPLAY = {
+    amount: (process.env.APIX_PAYMENT_AMOUNT || '0.1').trim() || '0.1',
+    currency: (process.env.APIX_PAYMENT_CURRENCY || 'AVAX').trim() || 'AVAX'
 };
-// normalizeChainId: helper function.
-const normalizeChainId = (value, fallback) => {
-    if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
-        return Math.floor(value);
+const parsePaymentProofValue = (rawValue) => {
+    const value = rawValue.trim();
+    if (!value)
+        return '';
+    if (value.startsWith('0x')) {
+        return value;
     }
-    return parsePositiveInt(typeof value === 'string' ? value : '', fallback);
+    const txHashMatch = value.match(/tx_hash=([0-9a-zA-Zx]+)/i);
+    if (txHashMatch?.[1]) {
+        return txHashMatch[1];
+    }
+    try {
+        const parsed = JSON.parse(value);
+        if (typeof parsed?.txHash === 'string')
+            return parsed.txHash;
+        if (typeof parsed?.tx_hash === 'string')
+            return parsed.tx_hash;
+    }
+    catch (_error) {
+        // Keep parser intentionally permissive for compatibility.
+    }
+    return '';
 };
-// parseAmountWei: helper function.
-const parseAmountWei = (value, fallback) => {
-    const trimmed = (value || '').trim();
-    return /^\d+$/.test(trimmed) ? trimmed : fallback;
+const extractPaymentProof = (req) => {
+    const authHeader = req.header('authorization') || '';
+    if (authHeader.toLowerCase().startsWith('apix ')) {
+        const token = authHeader.substring(authHeader.indexOf(' ') + 1);
+        if (token)
+            return token.trim();
+    }
+    const paymentSignature = req.header('payment-signature') || '';
+    return parsePaymentProofValue(paymentSignature);
 };
-// normalizeNetwork: helper function.
-const normalizeNetwork = (rawNetwork, chainId) => {
-    const trimmed = (rawNetwork || '').trim();
-    if (!trimmed) {
-        return `eip155:${chainId}`;
-    }
-    if (/^eip155:\d+$/.test(trimmed)) {
-        return trimmed;
-    }
-    if (/^\d+$/.test(trimmed)) {
-        return `eip155:${normalizeChainId(trimmed, chainId)}`;
-    }
-    if (trimmed.startsWith('eip')) {
-        console.warn(`Invalid network format "${trimmed}", falling back to eip155:${chainId}.`);
-    }
-    return `eip155:${chainId}`;
-};
-// parseNetworkChainId: helper function.
-const parseNetworkChainId = (network) => {
-    const match = /^eip155:(\d+)$/.exec((network || '').trim());
-    if (!match)
-        return 0;
-    return normalizeChainId(match[1], 0);
-};
-const configuredChainId = parsePositiveInt(process.env.APIX_CHAIN_ID, 43114);
-const configuredNetwork = normalizeNetwork(process.env.APIX_NETWORK, configuredChainId);
-const paymentChainId = parseNetworkChainId(configuredNetwork) || configuredChainId;
-if (paymentChainId !== configuredChainId) {
-    console.warn(`APIX_CHAIN_ID=${configuredChainId} and APIX_NETWORK=${configuredNetwork} mismatch; deriving chain_id from network as ${paymentChainId}.`);
-}
-const PAYMENT_PROFILE = {
-    chainId: paymentChainId,
-    network: configuredNetwork,
-    currency: (process.env.APIX_PAYMENT_CURRENCY || 'AVAX').trim(),
-    amount: (process.env.APIX_PAYMENT_AMOUNT || '0.1').trim(),
-    amountWei: parseAmountWei(process.env.APIX_PAYMENT_AMOUNT_WEI, '100000000000000000'),
-    recipient: (process.env.APIX_PAYMENT_RECIPIENT || '0x0B3F82F42d05cEb8E4b33180Af782c0ccbDB25FC').trim(),
-    minConfirmations: parsePositiveInt(process.env.APIX_MIN_CONFIRMATIONS, 1)
-};
-// parseClientType: helper function.
-const parseClientType = (rawType) => {
-    if (!rawType) {
-        return 'human';
-    }
-    const normalized = rawType.trim().toLowerCase();
-    if (normalized === 'agent') {
-        return 'agent';
-    }
-    return 'human';
-};
-// extractClientType: helper function.
-const extractClientType = (req) => {
-    const headerCandidates = [
-        'x-apix-client-type',
-        'apix-client-type',
-        'x-client-type',
-        'x-demo-client-type'
-    ];
-    for (const key of headerCandidates) {
-        const value = req.get(key);
-        if (value) {
-            return parseClientType(value);
+const apixProductMiddleware = (clientType) => async (req, res, next) => {
+    const requestId = req.requestId;
+    const paymentHandled = await apix.handlePaymentContext({
+        ...(requestId ? { requestId } : {}),
+        paymentProof: extractPaymentProof(req),
+        clientType,
+        paymentDetails: {}
+    }, res, next, {
+        onVerified: (proof) => {
+            req.apixProof = proof;
         }
+    });
+    if (paymentHandled) {
+        return;
     }
-    return 'human';
-};
-// getClientTypeHint: helper function.
-const getClientTypeHint = (clientType) => {
-    if (clientType === 'agent') {
-        return {
-            payment_flow: 'agent_submit_tx_hash',
-            payment_hint: {
-                mode: 'agent',
-                required_action: 'Submit tx hash to retry as Authorization header',
-                authorization_scheme: 'Apix <tx_hash>',
-                verification_hint: 'Call Authorization: Apix <tx_hash> with X-Request-ID equal to payment request_id.'
-            },
-            payment_channels: ['agent_tx_hash'],
-            channels: ['agent_tx_hash']
-        };
-    }
-    return {
-        payment_flow: 'wallet_submit',
-        payment_hint: {
-            mode: 'human',
-            required_action: 'Open wallet and pay on-chain',
-            wallet_hint: 'MetaMask is required for demo.',
-            verification_hint: 'SDK/API retries automatically after transaction hash is submitted.'
-        },
-        payment_channels: ['evm_wallet'],
-        channels: ['evm_wallet']
-    };
 };
 const sendError = (res, code, options) => {
     const definition = API_ERROR_DEFINITIONS[code];
@@ -397,64 +337,14 @@ app.get('/metrics', (_req, res) => {
         routes: routeMetrics
     });
 });
-// parsePaymentSignature: helper function.
-const parsePaymentSignature = (value) => {
-    const raw = value.trim();
-    if (!raw)
-        return '';
-    if (raw.startsWith('0x'))
-        return raw;
-    const txHashMatch = raw.match(/tx_hash=([0-9a-zA-Zx]+)/i);
-    if (txHashMatch?.[1])
-        return txHashMatch[1];
-    try {
-        const parsed = JSON.parse(raw);
-        if (typeof parsed?.txHash === 'string')
-            return parsed.txHash;
-        if (typeof parsed?.tx_hash === 'string')
-            return parsed.tx_hash;
-    }
-    catch (_err) {
-        // Keep parsing fallbacks only.
-    }
-    return '';
-};
-// extractPaymentProof: helper function.
-const extractPaymentProof = (req) => {
-    // normalizeHeaderValue: helper function.
-    const normalizeHeaderValue = (value) => {
-        if (typeof value === 'string') {
-            return value.trim();
-        }
-        if (!Array.isArray(value)) {
-            return '';
-        }
-        for (const item of value) {
-            if (typeof item === 'string' && item.trim()) {
-                return item.trim();
-            }
-        }
-        return '';
-    };
-    const authHeader = normalizeHeaderValue(req.headers['authorization']);
-    if (authHeader && authHeader.toLowerCase().startsWith('apix ')) {
-        const token = authHeader.substring(authHeader.indexOf(' ') + 1);
-        if (token)
-            return token.trim();
-    }
-    const paymentSignature = normalizeHeaderValue(req.headers['payment-signature']);
-    if (typeof paymentSignature === 'string') {
-        return parsePaymentSignature(paymentSignature);
-    }
-    return '';
-};
 // --- CORE BUSINESS LOGIC ---
 // getPremiumData: helper function.
 const getPremiumData = () => {
+    const amountLabel = `${PAYMENT_DISPLAY.amount} ${PAYMENT_DISPLAY.currency}`;
     return {
         id: "premium-item-unique-id",
         name: "High-Value Market Insight",
-        price: "$10.00 / 10 AVAX",
+        price: `Pay ${amountLabel}`,
         content: "This is the exclusive data payload. It is the SAME content regardless of payment method.",
         timestamp: new Date().toISOString()
     };
@@ -473,129 +363,6 @@ const stripeMiddleware = (req, res, next) => {
     console.log("Stripe Middleware: Payment Verified via Session Token");
     next();
 };
-// Apix Middleware Wrapper
-// apixMiddlewareWrapper: helper function.
-const apixMiddlewareWrapper = async (req, res, next) => {
-    const token = extractPaymentProof(req);
-    const requestId = req.requestId || getOrCreateRequestId(req);
-    const clientType = extractClientType(req);
-    const paymentDetails = {
-        requestId,
-        chainId: PAYMENT_PROFILE.chainId,
-        network: PAYMENT_PROFILE.network,
-        currency: PAYMENT_PROFILE.currency,
-        amount: PAYMENT_PROFILE.amount,
-        amountWei: PAYMENT_PROFILE.amountWei,
-        recipient: PAYMENT_PROFILE.recipient,
-        minConfirmations: PAYMENT_PROFILE.minConfirmations
-    };
-    if (!token) {
-        // Standard x402/L402 Pattern: Return WWW-Authenticate header
-        const paymentResponse = apix.createPaymentRequest(paymentDetails);
-        const paymentHint = getClientTypeHint(clientType);
-        const paymentBody = {
-            ...paymentResponse.body,
-            client_type: clientType,
-            ...paymentHint,
-            code: paymentResponse.body.code || "payment_required",
-            message: paymentResponse.body.message || "Payment required to access premium resource.",
-            retryable: paymentResponse.body.retryable ?? false
-        };
-        paymentBody.details = {
-            ...paymentResponse.body.details,
-            client_type: clientType,
-            ...paymentHint
-        };
-        res.set(paymentResponse.headers);
-        res.status(402).json(paymentBody);
-        return;
-    }
-    let validToken = '';
-    // Heuristic: If token starts with 0x, treat as TxHash (Delegated Verification)
-    // Otherwise treat as JWT (Session Validation)
-    if (token.startsWith('0x') && token.length < 100) {
-        logEvent("apix.verify_started", { request_id: requestId, tx_hash: token, client_type: clientType });
-        const result = await apix.verifyPayment(token, paymentDetails);
-        if (!result.success || !result.token) {
-            logEvent("apix.verify_failed", {
-                request_id: requestId,
-                tx_hash: token,
-                code: result.code || "apix_verification_failed",
-                retryable: result.retryable ?? false,
-                message: result.message || "Apix verification failed."
-            });
-            sendError(res, result.code || "apix_verification_failed", {
-                retryable: result.retryable ?? undefined,
-                requestId: result.requestId || paymentDetails.requestId,
-                message: result.message
-            });
-            return;
-        }
-        validToken = result.token;
-    }
-    else {
-        // JWT Validation
-        if (await apix.validateSessionState(token)) {
-            validToken = token;
-        }
-        else {
-            sendError(res, "invalid_apix_session", { requestId: paymentDetails.requestId });
-            return;
-        }
-    }
-    // Atomic Deduction Logic: Start Request
-    const sessionStart = await apix.startRequestStateWithResult(validToken);
-    if (!sessionStart.started) {
-        const code = sessionStart.code || 'session_start_failed';
-        const message = sessionStart.message || 'Session start failed.';
-        switch (code) {
-            case 'session_request_in_progress':
-                sendError(res, "session_request_in_progress", { message, retryable: true, requestId: paymentDetails.requestId });
-                break;
-            case 'session_not_found':
-                sendError(res, "invalid_apix_session", { message, requestId: paymentDetails.requestId });
-                break;
-            case 'session_quota_exceeded':
-                sendError(res, "session_quota_exceeded", { message, requestId: paymentDetails.requestId });
-                break;
-            default:
-                sendError(res, code, { message, retryable: true, requestId: paymentDetails.requestId });
-                break;
-        }
-        return;
-    }
-    // Hook into response finish to commit/rollback
-    let quotaFinalized = false;
-    // finalizeQuota: helper function.
-    const finalizeQuota = () => {
-        if (quotaFinalized)
-            return;
-        quotaFinalized = true;
-        if (res.statusCode >= 200 && res.statusCode < 300) {
-            void apix.commitRequestState(validToken).catch((error) => {
-                logEvent("apix.quota_commit_failed", {
-                    request_id: requestId,
-                    message: String(error?.message || error || 'unknown_error')
-                });
-            });
-            return;
-        }
-        void apix.rollbackRequestState(validToken).catch((error) => {
-            logEvent("apix.quota_rollback_failed", {
-                request_id: requestId,
-                message: String(error?.message || error || 'unknown_error')
-            });
-        });
-        if (res.statusCode >= 500) {
-            console.log("Apix: Request Rolled Back (Quota Refunded)");
-        }
-    };
-    res.on('finish', finalizeQuota);
-    res.on('close', finalizeQuota);
-    // Inject proof (JWT) so controller can return it to client
-    req.apixProof = validToken;
-    next();
-};
 // --- ENDPOINTS ---
 // 1. Stripe Endpoint
 app.get('/stripe-product', stripeMiddleware, (req, res) => {
@@ -607,7 +374,7 @@ app.get('/stripe-product', stripeMiddleware, (req, res) => {
     });
 });
 // 2. Apix Endpoint
-app.get('/apix-product', apixMiddlewareWrapper, (req, res) => {
+app.get('/apix-product', apixProductMiddleware('human'), (req, res) => {
     logEvent("apix.request_success", { request_id: req.requestId, path: req.path });
     const data = getPremiumData();
     res.json({
@@ -616,8 +383,38 @@ app.get('/apix-product', apixMiddlewareWrapper, (req, res) => {
         ...data
     });
 });
-if (process.env.NODE_ENV !== 'test') {
-    app.listen(port, () => {
-        console.log(`Demo Server running at http://localhost:${port}`);
+app.get('/agent-apix-product', apixProductMiddleware('agent'), (req, res) => {
+    logEvent("apix_agent.request_success", { request_id: req.requestId, path: req.path });
+    const data = getPremiumData();
+    res.json({
+        method: "Apix",
+        proof: req.apixProof,
+        ...data
     });
+});
+if (process.env.NODE_ENV !== 'test') {
+    const server = app.listen(port, bindHost, () => {
+        console.log(`Demo Server running at http://${bindHost}:${port}`);
+    });
+    server.on('error', (error) => {
+        console.error('Demo Server startup error:', {
+            code: error.code,
+            syscall: error.syscall,
+            address: error.address,
+            port: error.port,
+            message: error.message
+        });
+        process.exit(1);
+    });
+    // Keep process alive in constrained runtime environments where an
+    // otherwise-unreferenced server handle can be garbage-collected.
+    process.stdin.resume();
+    const shutdown = (signal) => {
+        console.log(`Demo Server shutting down via ${signal}`);
+        server.close(() => {
+            process.exit(0);
+        });
+    };
+    process.on('SIGINT', () => shutdown('SIGINT'));
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
 }

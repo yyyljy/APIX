@@ -103,7 +103,7 @@
 |---|---|---|---|
 | 1~2 | 스키마/프로토콜 정합성 확정 | `entitlement-token` draft-to-impl v1 스펙 | 샘플 request/response JSON 확정, 오류 코드표 확정 |
 | 3~4 | BJWT 엔진/검증 모듈 구현 | `apix-sdk-node`에 BJWT signer+verifier 추가 | EIP-191 서명/검증 및 토큰 decode 테스트 통과 |
-| 5 | 백엔드 402 광고 + pack 선택 수집 | `/apix-product` 경로가 pack 선택을 받음 | accepted.extra 파싱 + verify에서 pack 반영 |
+| 5 | 백엔드 402 광고 + pack 선택 수집 | `/apix-product`(human), `/agent-apix-product`(agent) 경로가 pack 선택을 받음 | accepted.extra 파싱 + verify에서 pack 반영 |
 | 6 | entitlement 서버사이드 저장소 전환 | DB/Redis 기반 quota/리플레이 저장소 | 동시성 테스트에서 누락/중복 없는 증명 |
 | 7 | request-time PoP 검증/재사용 탐지 구현 | `(token.jti, proof.jti)` 유일성 보장 | 동일 proof 재요청에서 중복 증감 없음 |
 | 8 | API contract 통일 및 에러 매핑 통합 | 백엔드-SDK-프론트 에러표 일치 | e2e 402/재요청 케이스 회귀 통과 |

@@ -2,6 +2,7 @@ import axios from 'axios';
 import * as jwt from 'jsonwebtoken';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
 
 export interface SessionData {
     claims: any;
@@ -60,6 +61,13 @@ export interface ApixConfig {
     rpcTimeoutMs?: number;
     rpcMaxRetries?: number;
     defaultMinConfirmations?: number;
+    paymentChainId?: number | string;
+    paymentNetwork?: string;
+    paymentCurrency?: string;
+    paymentAmount?: string;
+    paymentAmountWei?: string;
+    paymentRecipient?: string;
+    paymentMinConfirmations?: number | string;
     jwtTtlSeconds?: number;
     jwtIssuer?: string;
     jwtKid?: string;
@@ -78,6 +86,16 @@ export interface VerificationResult {
 
 export interface PaymentDetails {
     requestId: string;
+    chainId: number;
+    network: string;
+    currency: string;
+    amount: string;
+    amountWei: string;
+    recipient: string;
+    minConfirmations?: number;
+}
+
+interface PaymentProfile {
     chainId: number;
     network: string;
     currency: string;
@@ -111,6 +129,47 @@ export interface PaymentResponse {
         };
     };
 }
+
+export type ClientType = 'human' | 'agent';
+
+type RequestLike = {
+    headers?: Record<string, string | string[] | undefined>;
+    get?: (name: string) => string | undefined;
+    requestId?: string;
+};
+
+type ResponseLike = {
+    statusCode?: number;
+    status: (statusCode: number) => ResponseLike;
+    set: (headers: Record<string, string>) => void;
+    json: (payload: unknown) => void;
+    on: (event: 'finish' | 'close', listener: () => void) => void;
+};
+
+export interface ApixPaymentMiddlewareOptions {
+    extractPaymentProof?: (req: RequestLike) => string;
+    extractRequestId?: (req: RequestLike) => string;
+    clientType?: ClientType;
+    getClientTypeHint?: (clientType: ClientType) => Record<string, unknown>;
+}
+
+export interface ApixPaymentContext {
+    requestId?: string;
+    paymentProof?: string;
+    clientType?: ClientType;
+    paymentDetails?: Partial<PaymentDetails>;
+}
+
+export interface ApixPaymentFlowOptions {
+    getClientTypeHint?: (clientType: ClientType) => Record<string, unknown>;
+    onVerified?: (token: string) => void;
+}
+
+type ApiErrorDefinition = {
+    status: number;
+    message: string;
+    retryable: boolean;
+};
 
 type SessionStoreSnapshot = Record<string, SessionData>;
 interface RpcTransaction {
@@ -269,6 +328,7 @@ export class ApixMiddleware {
     private config: ApixConfig;
     private environment: string;
     private rpcUrl: string;
+    private paymentProfile: PaymentProfile;
     private rpcTimeoutMs: number;
     private rpcMaxRetries: number;
     private defaultMinConfirmations: number;
@@ -279,6 +339,68 @@ export class ApixMiddleware {
     private jwtSecret: string;
     private verificationPairCache: Map<string, LocalVerificationRecord>;
     private verificationTxOwner: Map<string, string>;
+    private static readonly API_ERROR_DEFINITIONS: Record<string, ApiErrorDefinition> = {
+        invalid_stripe_session: {
+            status: 401,
+            message: 'Missing or invalid Stripe session.',
+            retryable: false
+        },
+        invalid_apix_session: {
+            status: 403,
+            message: 'Invalid or expired Apix session.',
+            retryable: false
+        },
+        apix_verification_failed: {
+            status: 403,
+            message: 'Apix verification failed.',
+            retryable: false
+        },
+        session_not_found: {
+            status: 403,
+            message: 'Session token not found or expired.',
+            retryable: false
+        },
+        session_request_in_progress: {
+            status: 409,
+            message: 'Session request is already in progress.',
+            retryable: true
+        },
+        session_quota_exceeded: {
+            status: 402,
+            message: 'Session quota exceeded.',
+            retryable: false
+        },
+        session_start_failed: {
+            status: 403,
+            message: 'Session start failed.',
+            retryable: false
+        },
+        missing_tx_hash: {
+            status: 400,
+            message: 'Transaction hash is missing.',
+            retryable: false
+        },
+        tx_hash_already_used: {
+            status: 403,
+            message: 'Transaction hash already used by another request.',
+            retryable: false
+        },
+        verification_failed: {
+            status: 403,
+            message: 'Verification failed.',
+            retryable: false
+        },
+        internal_error: {
+            status: 500,
+            message: 'Internal error.',
+            retryable: true
+        },
+        payment_required: {
+            status: 402,
+            message: 'Payment required to access premium resource.',
+            retryable: false
+        }
+    };
 
     // constructor: helper function.
 
@@ -325,8 +447,334 @@ export class ApixMiddleware {
                 : new InMemorySessionStore();
         }
 
+        this.paymentProfile = this.resolvePaymentProfile(config);
         this.verificationPairCache = new Map();
         this.verificationTxOwner = new Map();
+    }
+
+    // resolvePaymentProfile: helper function.
+    private resolvePaymentProfile(config: ApixConfig): PaymentProfile {
+        const defaultChainId = this.parsePositiveInt(
+            config.paymentChainId ?? process.env.APIX_PAYMENT_CHAIN_ID ?? process.env.APIX_CHAIN_ID,
+            43114
+        );
+        const configuredNetwork = this.normalizeNetwork(
+            config.paymentNetwork || process.env.APIX_PAYMENT_NETWORK || process.env.APIX_NETWORK,
+            defaultChainId
+        );
+        const parsedNetworkChainId = this.parseNetworkChainId(configuredNetwork);
+        const chainId = this.parsePositiveInt(
+            config.paymentChainId ?? process.env.APIX_PAYMENT_CHAIN_ID ?? parsedNetworkChainId,
+            parsedNetworkChainId || defaultChainId
+        );
+        if (chainId !== parsedNetworkChainId) {
+            console.warn(`APIX payment config mismatch: chain_id=${chainId}, network=${configuredNetwork} (derived_chain_id=${parsedNetworkChainId}). Using explicit chain_id.`);
+        }
+
+        return {
+            chainId,
+            network: configuredNetwork,
+            currency: (config.paymentCurrency || process.env.APIX_PAYMENT_CURRENCY || 'AVAX').trim() || 'AVAX',
+            amount: (config.paymentAmount || process.env.APIX_PAYMENT_AMOUNT || '0.1').trim() || '0.1',
+            amountWei: this.parseAmountWei(
+                config.paymentAmountWei || process.env.APIX_PAYMENT_AMOUNT_WEI,
+                '100000000000000000'
+            ),
+            recipient: (config.paymentRecipient || process.env.APIX_PAYMENT_RECIPIENT || '0x0B3F82F42d05cEb8E4b33180Af782c0ccbDB25FC').trim(),
+            minConfirmations: this.parsePositiveInt(
+                config.paymentMinConfirmations ?? process.env.APIX_PAYMENT_MIN_CONFIRMATIONS ?? process.env.APIX_MIN_CONFIRMATIONS,
+                this.defaultMinConfirmations
+            )
+        };
+    }
+
+    // createPaymentMiddleware: helper function.
+
+
+    createPaymentMiddleware(
+        getPaymentDetails: (req: RequestLike) => Partial<PaymentDetails> = () => ({}),
+        options: ApixPaymentMiddlewareOptions = {}
+    ) {
+        const extractRequestId = options.extractRequestId ?? ((req: RequestLike) => this.extractRequestId(req));
+        const extractPaymentProof = options.extractPaymentProof ?? ((req: RequestLike) => this.extractPaymentProof(req));
+        const getClientTypeHint = options.getClientTypeHint ?? ((clientType: ClientType) => this.getClientTypeHint(clientType));
+        const clientType = options.clientType ?? 'human';
+
+        return async (req: RequestLike, res: ResponseLike, next: () => void) => {
+            const requestContext: RequestLike = {};
+            if (req.get) {
+                requestContext.get = req.get;
+            }
+            if (req.headers) {
+                requestContext.headers = req.headers;
+            }
+            if (req.requestId) {
+                requestContext.requestId = req.requestId;
+            }
+            const baseDetails = getPaymentDetails(requestContext) || {};
+            const extractedRequestId = extractRequestId(requestContext) || baseDetails.requestId;
+            const token = extractPaymentProof(requestContext);
+
+            await this.handlePaymentContext(
+                {
+                    ...(extractedRequestId ? { requestId: extractedRequestId } : {}),
+                    paymentProof: token,
+                    clientType,
+                    paymentDetails: baseDetails
+                },
+                res,
+                next,
+                {
+                    getClientTypeHint,
+                    onVerified: (proof) => {
+                        (req as any).apixProof = proof;
+                    }
+                }
+            );
+        };
+    }
+
+    async handlePaymentContext(
+        context: ApixPaymentContext,
+        res: ResponseLike,
+        next: () => void,
+        options: ApixPaymentFlowOptions = {}
+    ): Promise<boolean> {
+        const sendError = (res: ResponseLike, code: string, overrides: { status?: number; message?: string | undefined; retryable?: boolean | undefined; requestId?: string } = {}) => {
+            const definition = ApixMiddleware.API_ERROR_DEFINITIONS[code];
+            const status = overrides.status ?? definition?.status ?? 500;
+            const message = overrides.message ?? definition?.message ?? code;
+            const retryable = overrides.retryable ?? definition?.retryable ?? false;
+            const requestId = overrides.requestId;
+
+            res.status(status).json({
+                error: status >= 500 ? 'Internal Error' : 'Request Failed',
+                code,
+                message,
+                retryable,
+                request_id: requestId
+            });
+        };
+
+        const getClientTypeHint = options.getClientTypeHint ?? ((clientType: ClientType) => this.getClientTypeHint(clientType));
+        const requestId = (context.requestId || this.extractRequestId({})).trim();
+        const paymentDetails: PaymentDetails = {
+            ...this.paymentProfile,
+                ...(context.paymentDetails || {}),
+                requestId
+            } as PaymentDetails;
+
+        const token = (context.paymentProof || '').trim();
+        const clientType = context.clientType || 'human';
+
+        if (!token) {
+            const paymentResponse = this.createPaymentRequest(paymentDetails);
+            const paymentHint = getClientTypeHint(clientType);
+            const paymentBody = {
+                ...paymentResponse.body,
+                code: paymentResponse.body.code || 'payment_required',
+                message: paymentResponse.body.message || 'Payment required to access premium resource.',
+                retryable: paymentResponse.body.retryable ?? false
+            };
+
+            (paymentBody as any).details = {
+                ...paymentResponse.body.details,
+                ...paymentHint
+            };
+
+            res.set(paymentResponse.headers);
+            res.status(402).json(paymentBody);
+            return false;
+        }
+
+        let validToken = '';
+
+        if (this.isTxProof(token)) {
+            const result = await this.verifyPayment(token, paymentDetails);
+            if (!result.success || !result.token) {
+                sendError(res, result.code || 'apix_verification_failed', {
+                    message: result.message,
+                    retryable: result.retryable,
+                    requestId: paymentDetails.requestId
+                });
+                return false;
+            }
+            validToken = result.token;
+        } else if (await this.validateSessionState(token)) {
+            validToken = token;
+        } else {
+            sendError(res, 'invalid_apix_session', { requestId: paymentDetails.requestId });
+            return false;
+        }
+
+        const sessionStart = await this.startRequestStateWithResult(validToken);
+        if (!sessionStart.started) {
+            const code = sessionStart.code || 'session_start_failed';
+            switch (code) {
+                case 'session_request_in_progress':
+                    sendError(res, 'session_request_in_progress', {
+                        message: sessionStart.message,
+                        retryable: true,
+                        requestId: paymentDetails.requestId
+                    });
+                    break;
+                case 'session_not_found':
+                    sendError(res, 'invalid_apix_session', {
+                        message: sessionStart.message,
+                        requestId: paymentDetails.requestId
+                    });
+                    break;
+                case 'session_quota_exceeded':
+                    sendError(res, 'session_quota_exceeded', {
+                        message: sessionStart.message,
+                        requestId: paymentDetails.requestId
+                    });
+                    break;
+                default:
+                    sendError(res, code, {
+                        message: sessionStart.message,
+                        retryable: true,
+                        requestId: paymentDetails.requestId
+                    });
+                    break;
+            }
+            return false;
+        }
+
+        let quotaFinalized = false;
+        const finalizeQuota = () => {
+            if (quotaFinalized) return;
+            quotaFinalized = true;
+
+            const finalStatusCode = res.statusCode ?? 0;
+            if (finalStatusCode >= 200 && finalStatusCode < 300) {
+                void this.commitRequestState(validToken);
+                return;
+            }
+            void this.rollbackRequestState(validToken);
+        };
+
+        res.on('finish', finalizeQuota);
+        res.on('close', finalizeQuota);
+
+        options.onVerified?.(validToken);
+        next();
+        return true;
+    }
+
+    // extractPaymentProof: helper function.
+    private extractPaymentProof(req: RequestLike): string {
+        const parsePaymentSignature = (value: string): string => {
+            const raw = value.trim();
+            if (!raw) return '';
+
+            if (raw.startsWith('0x')) {
+                return raw;
+            }
+
+            const txHashMatch = raw.match(/tx_hash=([0-9a-zA-Zx]+)/i);
+            if (txHashMatch?.[1]) {
+                return txHashMatch[1];
+            }
+
+            try {
+                const parsed = JSON.parse(raw);
+                if (typeof parsed?.txHash === 'string') return parsed.txHash;
+                if (typeof parsed?.tx_hash === 'string') return parsed.tx_hash;
+            } catch (_error) {
+                // Keep parsing fallbacks only.
+            }
+            return '';
+        };
+
+        const normalizeHeaderValue = (value: string | string[] | undefined): string => {
+            if (typeof value === 'string') {
+                return value.trim();
+            }
+            if (!Array.isArray(value)) {
+                return '';
+            }
+            for (const item of value) {
+                if (typeof item === 'string' && item.trim()) {
+                    return item.trim();
+                }
+            }
+            return '';
+        };
+
+        const authHeader = normalizeHeaderValue((req as any).headers?.authorization || req.get?.('authorization'));
+        if (authHeader.toLowerCase().startsWith('apix ')) {
+            const token = authHeader.substring(authHeader.indexOf(' ') + 1);
+            if (token) {
+                return token.trim();
+            }
+        }
+
+        const paymentSignature = normalizeHeaderValue((req as any).headers?.['payment-signature'] || req.get?.('payment-signature'));
+        if (typeof paymentSignature === 'string') {
+            return parsePaymentSignature(paymentSignature);
+        }
+        return '';
+    }
+
+    // extractRequestId: helper function.
+    private extractRequestId(req: RequestLike): string {
+        const fromHeader = this.normalizeHeaderValue((req as any).headers?.['x-request-id'] || req.get?.('x-request-id'));
+        if (fromHeader) {
+            return fromHeader;
+        }
+        const fromReq = (req as any).requestId;
+        if (fromReq) {
+            return String(fromReq);
+        }
+        return `req_${crypto.randomUUID()}`;
+    }
+
+    private normalizeHeaderValue(value: string | string[] | undefined): string {
+        if (typeof value === 'string') {
+            return value.trim();
+        }
+        if (!Array.isArray(value)) {
+            return '';
+        }
+        for (const item of value) {
+            if (typeof item === 'string' && item.trim()) {
+                return item.trim();
+            }
+        }
+        return '';
+    }
+
+    // getClientTypeHint: helper function.
+    private getClientTypeHint(clientType: ClientType) {
+        if (clientType === 'agent') {
+            return {
+                payment_flow: 'agent_submit_tx_hash',
+                payment_hint: {
+                    mode: 'agent',
+                    required_action: 'Submit tx hash to retry as Authorization header',
+                    authorization_scheme: 'Apix <tx_hash>',
+                    verification_hint: 'Call Authorization: Apix <tx_hash> with X-Request-ID equal to payment request_id.'
+                },
+                payment_channels: ['agent_tx_hash'],
+                channels: ['agent_tx_hash']
+            };
+        }
+        return {
+            payment_flow: 'wallet_submit',
+            payment_hint: {
+                mode: 'human',
+                required_action: 'Open wallet and pay on-chain',
+                wallet_hint: 'MetaMask is required for demo.',
+                verification_hint: 'SDK/API retries automatically after transaction hash is submitted.'
+            },
+            payment_channels: ['evm_wallet'],
+            channels: ['evm_wallet']
+        };
+    }
+
+    private isTxProof(token: string): boolean {
+        return token.startsWith('0x') && token.length < 100;
     }
 
     // updateSession: helper function.
@@ -399,6 +847,50 @@ export class ApixMiddleware {
 
     private parseRequestId(token?: string): string {
         return (token || '').trim();
+    }
+
+    // normalizeNetwork: helper function.
+
+
+    private normalizeNetwork(network: string | undefined, chainId: number): string {
+        const normalizedChainId = chainId > 0 ? chainId : 43114;
+        const trimmed = (network || '').trim();
+        if (!trimmed) {
+            return `eip155:${normalizedChainId}`;
+        }
+        if (/^eip155:\d+$/.test(trimmed)) {
+            return trimmed;
+        }
+        if (/^\d+$/.test(trimmed)) {
+            return `eip155:${this.parsePositiveInt(trimmed, normalizedChainId)}`;
+        }
+        if (trimmed.startsWith('eip')) {
+            console.warn(`Invalid network format "${trimmed}", falling back to eip155:${normalizedChainId}.`);
+        }
+        return `eip155:${normalizedChainId}`;
+    }
+
+    // parsePositiveInt: helper function.
+
+
+    private parsePositiveInt(value: number | string | undefined, fallback: number): number {
+        if (typeof value === 'number' && Number.isFinite(value)) {
+            return Math.max(1, Math.floor(value));
+        }
+        const source = typeof value === 'string' ? value : '';
+        const parsed = Number.parseInt(source.trim(), 10);
+        if (Number.isFinite(parsed) && parsed > 0) {
+            return parsed;
+        }
+        return fallback;
+    }
+
+    // parseAmountWei: helper function.
+
+
+    private parseAmountWei(value: string | undefined, fallback: string): string {
+        const trimmed = (value || '').trim();
+        return /^\d+$/.test(trimmed) ? trimmed : fallback;
     }
 
     // parseNetworkChainId: helper function.

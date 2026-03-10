@@ -1,13 +1,15 @@
 import requests
+import os
 import sys
 
 BASE_URL = "http://localhost:3000"
+TARGET_PATH = os.environ.get("APIX_TARGET_PATH", "/apix-product").strip() or "/apix-product"
 
 # test_402_response: helper function.
 def test_402_response():
     print("Testing 402 Response...")
     try:
-        response = requests.get(f"{BASE_URL}/apix-product")
+        response = requests.get(f"{BASE_URL}{TARGET_PATH}")
         
         if response.status_code != 402:
             print(f"FAILED: Expected 402, got {response.status_code}")
@@ -40,7 +42,7 @@ def test_200_success():
     
     try:
         print("  Sending TxHash...")
-        response = requests.get(f"{BASE_URL}/apix-product", headers=headers)
+        response = requests.get(f"{BASE_URL}{TARGET_PATH}", headers=headers)
         
         if response.status_code != 200:
             print(f"  FAILED: Expected 200, got {response.status_code}")
@@ -70,7 +72,7 @@ def test_200_success():
     }
     
     try:
-        response = requests.get(f"{BASE_URL}/apix-product", headers=headers_jwt)
+        response = requests.get(f"{BASE_URL}{TARGET_PATH}", headers=headers_jwt)
         
         if response.status_code != 200:
             print(f"  FAILED: Expected 200 with JWT, got {response.status_code}")

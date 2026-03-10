@@ -1,14 +1,15 @@
 // Frontend API helpers aligned with current demo backend routes.
 
 const BACKEND_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:3000";
-const CLIENT_TYPE_HEADER = "X-APIX-CLIENT-TYPE";
 const DEFAULT_CLIENT_TYPE = "human";
 
 // buildHeaders: helper function.
-const buildHeaders = (extra = {}, clientType = DEFAULT_CLIENT_TYPE) => ({
+const buildHeaders = (extra = {}) => ({
     ...extra,
-    [CLIENT_TYPE_HEADER]: clientType
 });
+
+const apixRouteForClientType = (clientType = DEFAULT_CLIENT_TYPE) =>
+    clientType === "agent" ? "/agent-apix-product" : "/apix-product";
 
 const ERROR_TONE_FALLBACK = {
   cors_origin_not_allowed: {
@@ -204,9 +205,10 @@ export const fetchProxyResource = async (_listingId, token = null, clientType = 
   }
 
   try {
-    const res = await fetch(`${BACKEND_URL}/apix-product`, {
+    const path = apixRouteForClientType(clientType);
+    const res = await fetch(`${BACKEND_URL}${path}`, {
       method: "GET",
-      headers: buildHeaders(headers, clientType),
+      headers: buildHeaders(headers),
     });
 
     const body = await res.json();
@@ -240,13 +242,14 @@ export const fetchProxyResource = async (_listingId, token = null, clientType = 
 // verifyPayment: helper function.
 export const verifyPayment = async (requestId, txHash, clientType = DEFAULT_CLIENT_TYPE) => {
   try {
-    const res = await fetch(`${BACKEND_URL}/apix-product`, {
+    const path = apixRouteForClientType(clientType);
+    const res = await fetch(`${BACKEND_URL}${path}`, {
       method: "GET",
       headers: buildHeaders({
         Authorization: `Apix ${txHash}`,
         "PAYMENT-SIGNATURE": `tx_hash=${txHash}`,
         "X-Request-ID": requestId,
-      }, clientType),
+      }),
     });
 
     const body = await res.json();

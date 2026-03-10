@@ -69,7 +69,7 @@
 
 ### 5.2 백엔드(`demo/backend`) 변경
 
-- 기존 미들웨어 진입점은 유지 (`/apix-product`)
+- 기존 미들웨어 진입점은 사용자 타입에 따라 분리됨: 사람용 `/apix-product`, 에이전트용 `/agent-apix-product`
 - 402 반환/세션 시작/커밋/롤백 호출은 유지
 - `ApixMiddleware` 설정에 L1 검증 파라미터 반영
   - `rpcUrl`, `rpcTimeoutMs`, `rpcMaxRetries`, `defaultMinConfirmations`
@@ -152,7 +152,7 @@
   - 결제 tx 검증
   - 세션/쿼터/리플레이 제어
 - 백엔드가 해야 할 일:
-  - 보호 리소스 라우팅(예: `/apix-product`)와 정책 집행
+  - 보호 리소스 라우팅(예: `/apix-product`, `/agent-apix-product`)와 정책 집행
   - 응답 커밋/롤백 시점 훅(현재 코드 기준: `finalizeQuota`)
 
 현재 코드 근거:

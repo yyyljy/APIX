@@ -27,6 +27,13 @@ export interface ApixConfig {
     rpcTimeoutMs?: number;
     rpcMaxRetries?: number;
     defaultMinConfirmations?: number;
+    paymentChainId?: number | string;
+    paymentNetwork?: string;
+    paymentCurrency?: string;
+    paymentAmount?: string;
+    paymentAmountWei?: string;
+    paymentRecipient?: string;
+    paymentMinConfirmations?: number | string;
     jwtTtlSeconds?: number;
     jwtIssuer?: string;
     jwtKid?: string;
@@ -75,6 +82,35 @@ export interface PaymentResponse {
         };
     };
 }
+export type ClientType = 'human' | 'agent';
+type RequestLike = {
+    headers?: Record<string, string | string[] | undefined>;
+    get?: (name: string) => string | undefined;
+    requestId?: string;
+};
+type ResponseLike = {
+    statusCode?: number;
+    status: (statusCode: number) => ResponseLike;
+    set: (headers: Record<string, string>) => void;
+    json: (payload: unknown) => void;
+    on: (event: 'finish' | 'close', listener: () => void) => void;
+};
+export interface ApixPaymentMiddlewareOptions {
+    extractPaymentProof?: (req: RequestLike) => string;
+    extractRequestId?: (req: RequestLike) => string;
+    clientType?: ClientType;
+    getClientTypeHint?: (clientType: ClientType) => Record<string, unknown>;
+}
+export interface ApixPaymentContext {
+    requestId?: string;
+    paymentProof?: string;
+    clientType?: ClientType;
+    paymentDetails?: Partial<PaymentDetails>;
+}
+export interface ApixPaymentFlowOptions {
+    getClientTypeHint?: (clientType: ClientType) => Record<string, unknown>;
+    onVerified?: (token: string) => void;
+}
 export declare class FileSessionStore implements SessionStore {
     private filePath;
     private lockPath;
@@ -92,6 +128,7 @@ export declare class ApixMiddleware {
     private config;
     private environment;
     private rpcUrl;
+    private paymentProfile;
     private rpcTimeoutMs;
     private rpcMaxRetries;
     private defaultMinConfirmations;
@@ -102,15 +139,26 @@ export declare class ApixMiddleware {
     private jwtSecret;
     private verificationPairCache;
     private verificationTxOwner;
+    private static readonly API_ERROR_DEFINITIONS;
     constructor(config?: ApixConfig);
+    private resolvePaymentProfile;
+    createPaymentMiddleware(getPaymentDetails?: (req: RequestLike) => Partial<PaymentDetails>, options?: ApixPaymentMiddlewareOptions): (req: RequestLike, res: ResponseLike, next: () => void) => Promise<void>;
+    handlePaymentContext(context: ApixPaymentContext, res: ResponseLike, next: () => void, options?: ApixPaymentFlowOptions): Promise<boolean>;
+    private extractPaymentProof;
+    private extractRequestId;
+    private normalizeHeaderValue;
+    private getClientTypeHint;
+    private isTxProof;
     private updateSession;
-    private postSessionAction;
     validateSessionState(token: string): Promise<boolean>;
     startRequestState(token: string): Promise<boolean>;
     startRequestStateWithResult(token: string): Promise<SessionStartResult>;
     commitRequestState(token: string): Promise<void>;
     rollbackRequestState(token: string): Promise<void>;
     private parseRequestId;
+    private normalizeNetwork;
+    private parsePositiveInt;
+    private parseAmountWei;
     private parseNetworkChainId;
     private parseEnvInt;
     private parseHexToBigInt;
@@ -123,7 +171,7 @@ export declare class ApixMiddleware {
     private verifyTransactionOnChain;
     private issueLocalSessionToken;
     /**
-     * Verifies a payment transaction hash directly on-chain.
+     * Verifies a payment transaction hash directly on-chain (Avalanche L1).
      * @param txHash The transaction hash from the client.
      */
     verifyPayment(txHash: string, payment?: PaymentDetails): Promise<VerificationResult>;
@@ -151,4 +199,5 @@ export declare class ApixMiddleware {
      */
     createPaymentRequest(details: PaymentDetails): PaymentResponse;
 }
+export {};
 //# sourceMappingURL=index.d.ts.map
