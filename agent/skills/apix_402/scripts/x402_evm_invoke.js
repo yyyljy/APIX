@@ -36,6 +36,7 @@ function sanitizeInput(input = {}) {
         chain_id: String(input.chain_id || DEFAULT_CHAIN_ID).trim(),
         network: String(input.network || input.chain_id || DEFAULT_CHAIN_ID).trim(),
         rpc_url: String(input.rpc_url || DEFAULT_RPC_URL || "").trim(),
+        client_type: String(input.client_type || "agent").trim(),
         payment_signature_header: String(input.payment_signature_header || "PAYMENT-SIGNATURE").trim(),
         timeout_ms: Number.isFinite(Number(input.timeout_ms)) ? Number(input.timeout_ms) : DEFAULT_TIMEOUT_MS,
         max_retries: Number.isFinite(Number(input.max_retries)) && Number(input.max_retries) >= 0
@@ -216,7 +217,7 @@ async function fetchJsonSafe(response) {
     }
 }
 
-function buildHeadersForRetry(txHash, requestId, paymentSignatureHeader, existing) {
+function buildHeadersForRetry(txHash, requestId, paymentSignatureHeader, clientType, existing) {
     const headers = Object.assign({}, existing || {});
     headers.Authorization = `Apix ${txHash}`;
     if (requestId) {
@@ -224,6 +225,9 @@ function buildHeadersForRetry(txHash, requestId, paymentSignatureHeader, existin
     }
     if (paymentSignatureHeader) {
         headers[paymentSignatureHeader] = `tx_hash=${txHash}`;
+    }
+    if (String(clientType).toLowerCase() === "agent") {
+        headers["x-apix-client-type"] = "agent";
     }
     return headers;
 }
@@ -235,6 +239,7 @@ async function invokeWithPayment({
     payer_private_key,
     chain_id,
     rpc_url,
+    client_type,
     payment_signature_header,
     timeout_ms,
     max_retries
@@ -341,6 +346,7 @@ async function invokeWithPayment({
                 tx.hash,
                 challenge.request_id,
                 payment_signature_header,
+                client_type,
                 {}
             );
             const retried = await requestWithTimeout(url, {
@@ -404,3 +410,4 @@ module.exports = async function x402_evm_invoke(input = {}) {
 };
 
 module.exports.default = module.exports;
+
