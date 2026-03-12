@@ -30,6 +30,10 @@
 
 This gives you the speed of API-first design with verifiable crypto settlement.
 
+## Telegram Agent Payment Demo
+
+![Agent registration and 402 payment flow in Telegram](docs/assets/APIX-agent.gif)
+
 ## What is inside APIX
 
 - `apix-sdk-node/`  
