@@ -15,7 +15,7 @@ const PaymentModal = ({
     if (!isOpen) return null;
 
     const { amount, currency, recipient, requestId, chainId, network } = paymentDetails;
-    const networkLabel = network || (chainId ? `eip155:${chainId}` : 'eip155:43114');
+    const networkLabel = network || (chainId ? `eip155:${chainId}` : 'eip155:402');
 
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/55 p-4 backdrop-blur-sm">

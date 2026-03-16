@@ -40,7 +40,7 @@ const challengeExample = `# 1) Initial request to a protected route
 curl -i http://localhost:3000/apix-product
 
 HTTP/1.1 402 Payment Required
-WWW-Authenticate: Apix realm="Apix Protected", request_id="req_123", price="0.1", currency="AVAX", pay_to="0xRecipient..."
+WWW-Authenticate: Apix realm="Apix Protected", request_id="req_123", price="0.1", currency="APIX", pay_to="0xRecipient..."
 PAYMENT-REQUIRED: eyJ2ZXJzaW9uIjoieDQwMi1kcmFmdCIsLi4ufQ==
 X-Request-ID: req_123
 
@@ -52,14 +52,23 @@ X-Request-ID: req_123
   "request_id": "req_123",
   "details": {
     "request_id": "req_123",
-    "chain_id": 43113,
-    "network": "avalanche-fuji",
+    "chain_id": 402,
+    "network": "eip155:402",
     "payment_info": {
-      "currency": "AVAX",
+      "currency": "APIX",
       "amount": "0.1",
       "amount_wei": "100000000000000000",
       "recipient": "0xRecipient..."
-    }
+    },
+    "payment_flow": "wallet_submit",
+    "payment_hint": {
+      "mode": "human",
+      "required_action": "Open wallet and pay on-chain",
+      "wallet_hint": "MetaMask is required for demo.",
+      "verification_hint": "SDK/API retries automatically after transaction hash is submitted."
+    },
+    "payment_channels": ["evm_wallet"],
+    "channels": ["evm_wallet"]
   }
 }`;
 

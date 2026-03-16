@@ -26,7 +26,7 @@ function createSeededSessionStore(token: string): string {
 async function run() {
     process.env.NODE_ENV = 'test';
     process.env.APIX_JWT_SECRET = JWT_SECRET;
-    process.env.APIX_VERIFICATION_RPC_URL = 'https://api.avax.network/ext/bc/C/rpc';
+    process.env.APIX_VERIFICATION_RPC_URL = 'https://subnets.avax.network/apix/testnet/rpc';
     process.env.APIX_METRICS_TOKEN = 'metrics-test-token';
     process.env.APIX_PROVIDER_TOKEN = 'provider-token-for-test';
 
@@ -49,6 +49,9 @@ async function run() {
     process.env.APIX_CHAIN_ID = '402';
     process.env.APIX_NETWORK = 'eip155:402';
     process.env.APIX_PAYMENT_CURRENCY = 'APIX';
+    process.env.APIX_PAYMENT_AMOUNT = '0.1';
+    process.env.APIX_PAYMENT_AMOUNT_WEI = '100000000000000000';
+    process.env.APIX_PAYMENT_RECIPIENT = '0x0B3F82F42d05cEb8E4b33180Af782c0ccbDB25FC';
 
     let server: http.Server | null = null;
     try {
@@ -70,6 +73,20 @@ async function run() {
         assert.equal(challenge.status, 402);
         assert.ok(challenge.headers['www-authenticate']);
         assert.ok(challenge.headers['payment-required']);
+        assert.ok(challenge.headers['x-request-id']);
+        assert.equal(challenge.body?.code, 'payment_required');
+        assert.equal(challenge.body?.request_id, challenge.headers['x-request-id']);
+        assert.equal(challenge.body?.details?.chain_id, 402);
+        assert.equal(challenge.body?.details?.network, 'eip155:402');
+        assert.equal(challenge.body?.details?.payment_info?.currency, 'APIX');
+        const challengeHeader = JSON.parse(
+            Buffer.from(String(challenge.headers['payment-required']), 'base64').toString('utf8')
+        );
+        assert.equal(challengeHeader?.version, 'x402-draft');
+        assert.equal(challengeHeader?.request_id, challenge.headers['x-request-id']);
+        assert.equal(challengeHeader?.chain_id, 402);
+        assert.equal(challengeHeader?.network, 'eip155:402');
+        assert.equal(challengeHeader?.payment_info?.currency, 'APIX');
 
         const validSession = await client
             .get('/apix-product')
@@ -86,6 +103,7 @@ async function run() {
             .get('/apix-product')
             .set('Authorization', 'Apix invalid.jwt.token');
         assert.equal(invalidSession.status, 403);
+        assert.equal(invalidSession.body?.code, 'invalid_apix_session');
 
         const metricsUnauthorized = await client.get('/metrics');
         assert.equal(metricsUnauthorized.status, 401);

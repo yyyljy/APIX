@@ -58,6 +58,28 @@ export interface PaymentDetails {
     recipient: string;
     minConfirmations?: number;
 }
+export interface PaymentHint {
+    mode: string;
+    required_action: string;
+    wallet_hint?: string;
+    verification_hint?: string;
+    authorization_scheme?: string;
+}
+export interface PaymentRequiredDetails {
+    request_id: string;
+    chain_id: number;
+    network: string;
+    payment_info: {
+        currency: string;
+        amount: string;
+        amount_wei: string;
+        recipient: string;
+    };
+    payment_flow?: string;
+    payment_hint?: PaymentHint;
+    payment_channels?: string[];
+    channels?: string[];
+}
 export interface PaymentResponse {
     headers: {
         'WWW-Authenticate': string;
@@ -69,17 +91,7 @@ export interface PaymentResponse {
         code?: string;
         retryable?: boolean;
         request_id?: string;
-        details: {
-            request_id: string;
-            chain_id: number;
-            network: string;
-            payment_info: {
-                currency: string;
-                amount: string;
-                amount_wei: string;
-                recipient: string;
-            };
-        };
+        details: PaymentRequiredDetails;
     };
 }
 export type ClientType = 'human' | 'agent';
@@ -156,10 +168,16 @@ export declare class ApixMiddleware {
     commitRequestState(token: string): Promise<void>;
     rollbackRequestState(token: string): Promise<void>;
     private parseRequestId;
-    private normalizeNetwork;
-    private parsePositiveInt;
     private parseAmountWei;
     private parseNetworkChainId;
+    private resolveConfigValue;
+    private requireConfigValue;
+    private parseRequiredPositiveInt;
+    private parseOptionalPositiveInt;
+    private validateCurrency;
+    private validateAmount;
+    private validateRecipient;
+    private validateResolvedPaymentDetails;
     private parseEnvInt;
     private parseHexToBigInt;
     private rpcCall;

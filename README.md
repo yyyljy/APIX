@@ -116,7 +116,7 @@ sed -i '' -e 's#^APIX_VERIFICATION_RPC_URL=.*#APIX_VERIFICATION_RPC_URL=https://
 sed -i '' -e 's#^APIX_PROVIDER_TOKEN=.*#APIX_PROVIDER_TOKEN=provider-token-placeholder#' demo/backend/.env
 
 # 2) Set public RPC (frontend)
-sed -i '' -e 's#^VITE_AVALANCHE_RPC_URL=.*#VITE_AVALANCHE_RPC_URL=https://api.avax.network/ext/bc/C/rpc#' demo/frontend/.env
+sed -i '' -e 's#^VITE_AVALANCHE_RPC_URL=.*#VITE_AVALANCHE_RPC_URL=https://subnets.avax.network/apix/testnet/rpc#' demo/frontend/.env
 
 python execution/run_demo.py
 ```

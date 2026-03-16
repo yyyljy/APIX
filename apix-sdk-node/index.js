@@ -42,6 +42,9 @@ const jwt = __importStar(require("jsonwebtoken"));
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const crypto = __importStar(require("crypto"));
+const DEFAULT_APIX_CHAIN_ID = 402;
+const DEFAULT_APIX_NETWORK = `eip155:${DEFAULT_APIX_CHAIN_ID}`;
+const DEFAULT_APIX_RPC_URL = 'https://subnets.avax.network/apix/testnet/rpc';
 class InMemorySessionStore {
     // constructor: helper function.
     constructor() {
@@ -167,7 +170,7 @@ class ApixMiddleware {
     constructor(config = {}) {
         this.config = config;
         this.environment = (process.env.APIX_ENV || 'development').trim().toLowerCase();
-        const rpcUrlFromEnv = (process.env.APIX_VERIFICATION_RPC_URL || '').trim();
+        const rpcUrlFromEnv = (process.env.APIX_VERIFICATION_RPC_URL || DEFAULT_APIX_RPC_URL).trim();
         this.rpcUrl = (config.rpcUrl || rpcUrlFromEnv).trim();
         this.rpcTimeoutMs = this.parseEnvInt(config.rpcTimeoutMs, process.env.APIX_RPC_TIMEOUT_MS, 8000);
         if (this.rpcTimeoutMs <= 0) {
@@ -191,9 +194,6 @@ class ApixMiddleware {
         if (!this.jwtSecret) {
             throw new Error('Missing APIX_JWT_SECRET (or provide jwtSecret in ApixMiddleware config).');
         }
-        if (!this.rpcUrl) {
-            throw new Error('Missing APIX_VERIFICATION_RPC_URL (or config.rpcUrl) for on-chain verification.');
-        }
         if (config.sessionStore) {
             this.sessionStore = config.sessionStore;
         }
@@ -212,22 +212,23 @@ class ApixMiddleware {
     }
     // resolvePaymentProfile: helper function.
     resolvePaymentProfile(config) {
-        const defaultChainId = this.parsePositiveInt(config.paymentChainId ?? process.env.APIX_PAYMENT_CHAIN_ID ?? process.env.APIX_CHAIN_ID, 43114);
-        const configuredNetwork = this.normalizeNetwork(config.paymentNetwork || process.env.APIX_PAYMENT_NETWORK || process.env.APIX_NETWORK, defaultChainId);
-        const parsedNetworkChainId = this.parseNetworkChainId(configuredNetwork);
-        const chainId = this.parsePositiveInt(config.paymentChainId ?? process.env.APIX_PAYMENT_CHAIN_ID ?? parsedNetworkChainId, parsedNetworkChainId || defaultChainId);
+        const chainIdInput = this.resolveConfigValue(config.paymentChainId, [process.env.APIX_PAYMENT_CHAIN_ID, process.env.APIX_CHAIN_ID, String(DEFAULT_APIX_CHAIN_ID)]);
+        const chainId = this.parseRequiredPositiveInt(chainIdInput, 'paymentChainId');
+        const network = this.resolveConfigValue(config.paymentNetwork, [process.env.APIX_PAYMENT_NETWORK, process.env.APIX_NETWORK, DEFAULT_APIX_NETWORK]);
+        const parsedNetworkChainId = this.parseNetworkChainId(network);
         if (chainId !== parsedNetworkChainId) {
-            console.warn(`APIX payment config mismatch: chain_id=${chainId}, network=${configuredNetwork} (derived_chain_id=${parsedNetworkChainId}). Using explicit chain_id.`);
+            throw new Error(`Payment config mismatch: paymentChainId=${chainId} paymentNetwork=${network}`);
         }
-        return {
+        return this.validateResolvedPaymentDetails({
+            requestId: 'payment_profile',
             chainId,
-            network: configuredNetwork,
-            currency: (config.paymentCurrency || process.env.APIX_PAYMENT_CURRENCY || 'AVAX').trim() || 'AVAX',
-            amount: (config.paymentAmount || process.env.APIX_PAYMENT_AMOUNT || '0.1').trim() || '0.1',
-            amountWei: this.parseAmountWei(config.paymentAmountWei || process.env.APIX_PAYMENT_AMOUNT_WEI, '100000000000000000'),
-            recipient: (config.paymentRecipient || process.env.APIX_PAYMENT_RECIPIENT || '0x0B3F82F42d05cEb8E4b33180Af782c0ccbDB25FC').trim(),
-            minConfirmations: this.parsePositiveInt(config.paymentMinConfirmations ?? process.env.APIX_PAYMENT_MIN_CONFIRMATIONS ?? process.env.APIX_MIN_CONFIRMATIONS, this.defaultMinConfirmations)
-        };
+            network,
+            currency: this.requireConfigValue(this.resolveConfigValue(config.paymentCurrency, [process.env.APIX_PAYMENT_CURRENCY]), 'paymentCurrency', ['APIX_PAYMENT_CURRENCY']),
+            amount: this.requireConfigValue(this.resolveConfigValue(config.paymentAmount, [process.env.APIX_PAYMENT_AMOUNT]), 'paymentAmount', ['APIX_PAYMENT_AMOUNT']),
+            amountWei: this.requireConfigValue(this.resolveConfigValue(config.paymentAmountWei, [process.env.APIX_PAYMENT_AMOUNT_WEI]), 'paymentAmountWei', ['APIX_PAYMENT_AMOUNT_WEI']),
+            recipient: this.requireConfigValue(this.resolveConfigValue(config.paymentRecipient, [process.env.APIX_PAYMENT_RECIPIENT]), 'paymentRecipient', ['APIX_PAYMENT_RECIPIENT']),
+            minConfirmations: this.parseOptionalPositiveInt(config.paymentMinConfirmations ?? process.env.APIX_PAYMENT_MIN_CONFIRMATIONS ?? process.env.APIX_MIN_CONFIRMATIONS, this.defaultMinConfirmations, 'paymentMinConfirmations')
+        });
     }
     // createPaymentMiddleware: helper function.
     createPaymentMiddleware(getPaymentDetails = () => ({}), options = {}) {
@@ -279,11 +280,11 @@ class ApixMiddleware {
         };
         const getClientTypeHint = options.getClientTypeHint ?? ((clientType) => this.getClientTypeHint(clientType));
         const requestId = (context.requestId || this.extractRequestId({})).trim();
-        const paymentDetails = {
+        const paymentDetails = this.validateResolvedPaymentDetails({
             ...this.paymentProfile,
             ...(context.paymentDetails || {}),
             requestId
-        };
+        });
         const token = (context.paymentProof || '').trim();
         const clientType = context.clientType || 'human';
         if (!token) {
@@ -307,7 +308,7 @@ class ApixMiddleware {
         if (this.isTxProof(token)) {
             const result = await this.verifyPayment(token, paymentDetails);
             if (!result.success || !result.token) {
-                sendError(res, result.code || 'apix_verification_failed', {
+                sendError(res, result.code || 'verification_failed', {
                     message: result.message,
                     retryable: result.retryable,
                     requestId: paymentDetails.requestId
@@ -534,40 +535,19 @@ class ApixMiddleware {
     parseRequestId(token) {
         return (token || '').trim();
     }
-    // normalizeNetwork: helper function.
-    normalizeNetwork(network, chainId) {
-        const normalizedChainId = chainId > 0 ? chainId : 43114;
-        const trimmed = (network || '').trim();
-        if (!trimmed) {
-            return `eip155:${normalizedChainId}`;
-        }
-        if (/^eip155:\d+$/.test(trimmed)) {
-            return trimmed;
-        }
-        if (/^\d+$/.test(trimmed)) {
-            return `eip155:${this.parsePositiveInt(trimmed, normalizedChainId)}`;
-        }
-        if (trimmed.startsWith('eip')) {
-            console.warn(`Invalid network format "${trimmed}", falling back to eip155:${normalizedChainId}.`);
-        }
-        return `eip155:${normalizedChainId}`;
-    }
-    // parsePositiveInt: helper function.
-    parsePositiveInt(value, fallback) {
-        if (typeof value === 'number' && Number.isFinite(value)) {
-            return Math.max(1, Math.floor(value));
-        }
-        const source = typeof value === 'string' ? value : '';
-        const parsed = Number.parseInt(source.trim(), 10);
-        if (Number.isFinite(parsed) && parsed > 0) {
-            return parsed;
-        }
-        return fallback;
-    }
     // parseAmountWei: helper function.
-    parseAmountWei(value, fallback) {
+    parseAmountWei(value, label) {
         const trimmed = (value || '').trim();
-        return /^\d+$/.test(trimmed) ? trimmed : fallback;
+        if (!trimmed) {
+            throw new Error(`Missing ${label}.`);
+        }
+        if (!/^\d+$/.test(trimmed)) {
+            throw new Error(`Invalid ${label}: expected positive integer string, got "${value || ''}".`);
+        }
+        if (BigInt(trimmed) <= BigInt(0)) {
+            throw new Error(`Invalid ${label}: expected value greater than zero.`);
+        }
+        return trimmed;
     }
     // parseNetworkChainId: helper function.
     parseNetworkChainId(network) {
@@ -585,6 +565,107 @@ class ApixMiddleware {
             throw new Error(`invalid chain id in network "${network}"`);
         }
         return chainId;
+    }
+    resolveConfigValue(configValue, envCandidates) {
+        if (typeof configValue === 'number' && Number.isFinite(configValue)) {
+            return String(configValue);
+        }
+        if (typeof configValue === 'string' && configValue.trim()) {
+            return configValue.trim();
+        }
+        for (const candidate of envCandidates) {
+            const trimmed = (candidate || '').trim();
+            if (trimmed) {
+                return trimmed;
+            }
+        }
+        return '';
+    }
+    requireConfigValue(value, configLabel, envLabels) {
+        const trimmed = (value || '').trim();
+        if (trimmed) {
+            return trimmed;
+        }
+        throw new Error(`Missing ${envLabels.join(' or ')} (or provide ${configLabel} in ApixMiddleware config).`);
+    }
+    parseRequiredPositiveInt(value, label) {
+        if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+            return Math.floor(value);
+        }
+        const normalized = String(value ?? '').trim();
+        if (!/^\d+$/.test(normalized)) {
+            throw new Error(`Invalid ${label}: expected positive integer, got "${normalized}".`);
+        }
+        const parsed = Number.parseInt(normalized, 10);
+        if (!Number.isFinite(parsed) || parsed <= 0) {
+            throw new Error(`Invalid ${label}: expected value greater than zero.`);
+        }
+        return parsed;
+    }
+    parseOptionalPositiveInt(value, fallback, label) {
+        if (value === undefined || value === null || (typeof value === 'string' && !value.trim())) {
+            return fallback;
+        }
+        return this.parseRequiredPositiveInt(value, label);
+    }
+    validateCurrency(value, label) {
+        const trimmed = (value || '').trim();
+        if (!trimmed) {
+            throw new Error(`Missing ${label}.`);
+        }
+        if (!/^[A-Za-z0-9._-]+$/.test(trimmed)) {
+            throw new Error(`Invalid ${label}: "${value || ''}".`);
+        }
+        return trimmed;
+    }
+    validateAmount(value, label) {
+        const trimmed = (value || '').trim();
+        if (!trimmed) {
+            throw new Error(`Missing ${label}.`);
+        }
+        if (!/^\d+(\.\d+)?$/.test(trimmed)) {
+            throw new Error(`Invalid ${label}: expected decimal string, got "${value || ''}".`);
+        }
+        const normalized = trimmed.replace('.', '');
+        if (!/[1-9]/.test(normalized)) {
+            throw new Error(`Invalid ${label}: expected value greater than zero.`);
+        }
+        return trimmed;
+    }
+    validateRecipient(value, label) {
+        const trimmed = (value || '').trim();
+        if (!trimmed) {
+            throw new Error(`Missing ${label}.`);
+        }
+        if (!/^0x[a-fA-F0-9]{40}$/.test(trimmed)) {
+            throw new Error(`Invalid ${label}: expected EVM address, got "${value || ''}".`);
+        }
+        return trimmed;
+    }
+    validateResolvedPaymentDetails(details) {
+        const requestId = (details.requestId || '').trim();
+        if (!requestId) {
+            throw new Error('Payment details require a requestId.');
+        }
+        const chainId = this.parseRequiredPositiveInt(details.chainId, 'paymentDetails.chainId');
+        const network = (details.network || '').trim();
+        if (!network) {
+            throw new Error('Missing paymentDetails.network.');
+        }
+        const networkChainId = this.parseNetworkChainId(network);
+        if (networkChainId !== chainId) {
+            throw new Error(`Payment details mismatch: chainId=${chainId} network=${network}`);
+        }
+        return {
+            requestId,
+            chainId,
+            network,
+            currency: this.validateCurrency(details.currency, 'paymentDetails.currency'),
+            amount: this.validateAmount(details.amount, 'paymentDetails.amount'),
+            amountWei: this.parseAmountWei(details.amountWei, 'paymentDetails.amountWei'),
+            recipient: this.validateRecipient(details.recipient, 'paymentDetails.recipient'),
+            minConfirmations: this.parseOptionalPositiveInt(details.minConfirmations, this.defaultMinConfirmations, 'paymentDetails.minConfirmations')
+        };
     }
     // parseEnvInt: helper function.
     parseEnvInt(configValue, envValue, fallback) {
@@ -1014,11 +1095,6 @@ ApixMiddleware.API_ERROR_DEFINITIONS = {
     invalid_apix_session: {
         status: 403,
         message: 'Invalid or expired Apix session.',
-        retryable: false
-    },
-    apix_verification_failed: {
-        status: 403,
-        message: 'Apix verification failed.',
         retryable: false
     },
     session_not_found: {

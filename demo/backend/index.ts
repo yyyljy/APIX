@@ -95,9 +95,9 @@ const API_ERROR_DEFINITIONS: Record<string, ApiErrorDefinition> = {
         message: "Invalid or expired Apix session.",
         retryable: false
     },
-    apix_verification_failed: {
+    verification_failed: {
         status: 403,
-        message: "Apix verification failed.",
+        message: "Verification failed.",
         retryable: false
     },
     session_not_found: {

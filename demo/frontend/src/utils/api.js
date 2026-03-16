@@ -11,6 +11,22 @@ const buildHeaders = (extra = {}) => ({
 const apixRouteForClientType = (clientType = DEFAULT_CLIENT_TYPE) =>
     clientType === "agent" ? "/agent-apix-product" : "/apix-product";
 
+const LEGACY_ERROR_CODE_ALIASES = {
+  apix_verification_failed: "verification_failed",
+  session_not_found: "invalid_apix_session",
+};
+
+const normalizeErrorCode = (code, status) => {
+  const raw = String(code || "").trim();
+  if (raw && LEGACY_ERROR_CODE_ALIASES[raw]) {
+    return LEGACY_ERROR_CODE_ALIASES[raw];
+  }
+  if (raw) {
+    return raw;
+  }
+  return status === 402 ? "payment_required" : "request_failed";
+};
+
 const ERROR_TONE_FALLBACK = {
   cors_origin_not_allowed: {
     status: 403,
@@ -82,14 +98,9 @@ const ERROR_TONE_FALLBACK = {
     message: "Invalid or expired payment session.",
     retryable: false,
   },
-  session_not_found: {
+  verification_failed: {
     status: 403,
-    message: "Session token not found or expired.",
-    retryable: false,
-  },
-  apix_verification_failed: {
-    status: 403,
-    message: "Apix verification failed.",
+    message: "Verification failed.",
     retryable: false,
   },
   session_request_in_progress: {
@@ -121,7 +132,7 @@ const ERROR_TONE_FALLBACK = {
 
 // normalizeErrorPayload: helper function.
 const normalizeErrorPayload = (raw, status, override = {}) => {
-  const code = override.code || raw?.code || (status === 402 ? "payment_required" : "request_failed");
+  const code = normalizeErrorCode(override.code || raw?.code, status);
   const tone = ERROR_TONE_FALLBACK[code] || {
     status,
     message: "Request failed.",
@@ -150,12 +161,6 @@ export const ERROR_RESPONSE_SNAPSHOTS = {
     message: ERROR_TONE_FALLBACK.session_request_in_progress.message,
     retryable: true,
   },
-  session_not_found: {
-    status: 403,
-    code: "session_not_found",
-    message: ERROR_TONE_FALLBACK.session_not_found.message,
-    retryable: false,
-  },
   session_quota_exceeded: {
     status: 402,
     code: "session_quota_exceeded",
@@ -168,10 +173,10 @@ export const ERROR_RESPONSE_SNAPSHOTS = {
     message: ERROR_TONE_FALLBACK.session_state_unavailable.message,
     retryable: true,
   },
-  apix_verification_failed: {
+  verification_failed: {
     status: 403,
-    code: "apix_verification_failed",
-    message: ERROR_TONE_FALLBACK.apix_verification_failed.message,
+    code: "verification_failed",
+    message: ERROR_TONE_FALLBACK.verification_failed.message,
     retryable: false,
   },
 };
