@@ -8,17 +8,50 @@
 
 ## TL;DR
 
-- **APIX is a payment middleware for APIs**, built for AI agents and API providers.
-- **Pay-per-call monetization** is enforced with **Avalanche L1** using an **x402-style flow**.
-- **Fast for users, trustable for providers**: quick sessions, on-chain verification, and safe rollback when a request fails.
-- **Proposal planned**: We will submit ACP-402, a BJWT + ENTITLEMENT-TOKEN quota-access proposal (post-payment entitlement token) as part of the production hardening package: [apiX-402-bjwt-entitlement-token-proposal.md](/home/jylee/omx/APIX/docs/proposals/apiX-402-bjwt-entitlement-token-proposal.md).
+- **APIX is an HTTP-native monetization layer for APIs**, built for AI agents, API providers, and Web3 infrastructure teams.
+- **Pay-per-call access** is enforced with an **x402-style flow** and on-chain verification.
+- **Quota and entitlement products** are the next step, so providers can evolve from single-call pricing to package-based monetization.
+- **Provider control stays intact**: APIX sits in front of provider-owned endpoints instead of requiring a marketplace-first model.
+
+## What APIX is
+
+APIX is a focused product for teams that want to:
+- add paid access to an API without rebuilding billing from scratch,
+- support machine-to-machine and AI-agent payment flows,
+- verify payment before serving a protected resource,
+- and evolve from simple pay-per-call flows toward quota and entitlement models.
+
+APIX should be understood first as:
+1. **API monetization middleware**
+2. **payment verification and access-control layer**
+3. **foundation for a future monetization control plane**
+
+## What APIX is not
+
+At the current stage, APIX is **not** a general API marketplace.
+
+The product direction is centered on:
+- provider-owned API endpoints,
+- request-path payment enforcement,
+- settlement-aware access control,
+- and future operational controls such as replay prevention, reconciliation, and admin workflows.
 
 ## Why teams choose APIX
 
-- **Monetize immediately**: Add payment gating to any API endpoint with minimal middleware changes.
-- **No account churn**: APIx is built for machine-to-machine flows and AI-native integrations.
+- **Monetize immediately**: Add payment gating to an API endpoint with minimal middleware changes.
+- **Built for software buyers**: APIX is designed for AI agents and machine-to-machine integrations, not only human checkout flows.
 - **Fair payment logic**: `200 OK` commits usage; failed responses roll back quota (`No Data, No Pay`).
-- **Single architecture**: One SDK, one protocol pattern, and one dashboard-ready session flow.
+- **Clear upgrade path**: Start with pay-per-call, then move toward quota and entitlement products.
+- **Provider-first control**: Keep policy, settlement, and endpoint ownership on the provider side.
+
+## Commercial direction
+
+The launch-stage commercial model is expected to follow this path:
+- **Free sandbox** for learning, demos, and testnet experimentation
+- **Usage-based production** for paid request flows and monetized endpoints
+- **Enterprise packaging** for operational controls, support, and higher-trust deployments
+
+This keeps the first integration lightweight while leaving room for larger operational deployments later.
 
 ## How it works (simple view)
 
@@ -26,7 +59,7 @@
 2. APIX returns `402 Payment Required`.
 3. Client submits payment on Avalanche network.
 4. Client retries with a payment proof (`tx hash`).
-5. SDK verifies on-chain, issues a short session token, and request is served.
+5. SDK verifies on-chain, issues a short session token, and the request is served.
 
 This gives you the speed of API-first design with verifiable crypto settlement.
 
@@ -39,9 +72,9 @@ This gives you the speed of API-first design with verifiable crypto settlement.
 - `apix-sdk-node/`  
   Runtime SDK for verification, quota/session checks, and standardized payment challenge responses.
 - `demo/backend/`  
-  API sidecar reference implementation (`/health`, `/metrics`, protected routes).
+  API-side reference implementation (`/health`, `/metrics`, protected routes).
 - `demo/frontend/`  
-  React + Vite UI showing the payment flow end-to-end.
+  React + Vite demo showing the payment challenge and retry flow end-to-end.
 - `execution/`  
   Scripts to run/build the demo quickly.
 
@@ -119,9 +152,12 @@ npm run dev
 - On-chain verification is required (`APIX_VERIFICATION_RPC_URL`).
 - Session persistence defaults to local file storage.
 - `/metrics` is secured by Bearer token; production mode disables wildcard CORS.
+- The demo emphasizes the payment challenge and retry flow, not a full production control plane yet.
 
 ## Future roadmap
 
 - Shared distributed session storage for multi-instance deployment.
 - Expanded protocol compatibility (`L402`-style flow while maintaining current headers).
+- Entitlement token and quota-pack support on top of the base pay-per-call path.
 - Deeper observability: latency budgets, rollback ratio, and failure reason analytics.
+- Operational control-plane features such as replay protection, reconciliation, and admin APIs.
