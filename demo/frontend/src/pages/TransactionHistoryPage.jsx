@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { clearTransactions, listTransactions } from "../utils/transactions";
+import { getBlockExplorerUrl } from "../utils/chain";
 
 // formatDateTime: helper function.
 const formatDateTime = (timestamp) => {
@@ -12,6 +13,12 @@ const statusBadgeClass = (status) => {
   if (status === "success") return "bg-emerald-100 text-emerald-700";
   if (status === "failed") return "bg-rose-100 text-rose-700";
   return "bg-amber-100 text-amber-700";
+};
+
+const getTxExplorerUrl = (txHash) => {
+  if (!txHash) return "";
+  const baseUrl = String(getBlockExplorerUrl() || "https://explorer-test.avax.network/apix").replace(/\/$/, "");
+  return `${baseUrl}/tx/${txHash}`;
 };
 
 export default function TransactionHistoryPage() {
@@ -72,7 +79,21 @@ export default function TransactionHistoryPage() {
                 <p><span className="font-semibold">Created:</span> {formatDateTime(tx.createdAt)}</p>
                 <p><span className="font-semibold">Updated:</span> {formatDateTime(tx.updatedAt)}</p>
                 <p><span className="font-semibold">Request ID:</span> {tx.requestId || "-"}</p>
-                <p><span className="font-semibold">Tx Hash:</span> {tx.txHash || "-"}</p>
+                <p>
+                  <span className="font-semibold">Tx Hash:</span>{" "}
+                  {tx.txHash ? (
+                    <a
+                      href={getTxExplorerUrl(tx.txHash)}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="break-all text-sky-700 underline underline-offset-4 hover:text-sky-900 dark:text-sky-300 dark:hover:text-sky-100"
+                    >
+                      {tx.txHash}
+                    </a>
+                  ) : (
+                    "-"
+                  )}
+                </p>
               </div>
 
               {tx.message ? (

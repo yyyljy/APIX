@@ -11,6 +11,7 @@ import {
 import {
   ensureWalletChain,
   getFaucetClaimConfig,
+  getBlockExplorerUrl,
   getPaymentNetwork,
   getPreferredWalletProvider,
 } from "../utils/chain";
@@ -22,6 +23,7 @@ const DemoPage = () => {
   const [stripeResult, setStripeResult] = useState(null);
   const [apixTrace, setApixTrace] = useState(null);
   const [apixRaw, setApixRaw] = useState(null);
+  const [apixTxHash, setApixTxHash] = useState("");
   const [showStripeModal, setShowStripeModal] = useState(false);
   const [isProcessingStripe, setIsProcessingStripe] = useState(false);
 
@@ -157,6 +159,7 @@ const markFlowFailed = (flowId, message = "Payment failed") => {
       });
     }
     setApixTrace((prev) => `${prev}\n\nWallet payment failed: ${message}`);
+    setApixTxHash("");
     showToast(`Wallet payment failed: ${message}`, "error");
     setApixRaw(null);
     setIsProcessingApix(false);
@@ -171,6 +174,12 @@ const markFlowFailed = (flowId, message = "Payment failed") => {
       }
     };
   }, []);
+
+  const getTxExplorerUrl = (txHash) => {
+    if (!txHash) return "";
+    const baseUrl = String(getBlockExplorerUrl() || "https://explorer-test.avax.network/apix").replace(/\/$/, "");
+    return `${baseUrl}/tx/${txHash}`;
+  };
 
 // summarizePayload: helper function.
   const summarizePayload = (payload, status) => {
@@ -239,9 +248,10 @@ const callStripeApi = async () => {
 
   // Start APIX flow and handle 402 challenge by showing the selected mode.
 // initiateApixFlow: helper function.
-const initiateApixFlow = async () => {
+  const initiateApixFlow = async () => {
     try {
       setApixRaw(null);
+      setApixTxHash("");
       setApixTrace("1. Requesting protected resource...");
       const res = await fetchProxyResource("listing_001", null, clientType);
       const payload = await res.json();
@@ -306,6 +316,7 @@ const initiateApixFlow = async () => {
       } else {
         setApixTrace("Completed without payment challenge.");
         setApixRaw(payload);
+        setApixTxHash("");
         setShowApixModal(false);
       }
     } catch (err) {
@@ -431,6 +442,7 @@ const confirmApixPayment = async () => {
           setShowApixModal(false);
           setIsProcessingApix(false);
           setPendingApixTxnId(null);
+          setApixTxHash(txHash);
           setApixRaw({
             verify: verifyData,
             access: data,
@@ -481,6 +493,7 @@ const confirmApixPayment = async () => {
           `${prev}\n\nVerification failed: ${lastFailure.code}\n${lastFailure.message}`
           + (lastFailure.retryable ? "\nRetry with a new tx hash." : "")
       );
+      setApixTxHash("");
       showToast(`Verification failed: ${lastFailure.code}`, "error");
       setPendingApixTxnId(null);
       return;
@@ -495,6 +508,7 @@ const confirmApixPayment = async () => {
       }
       setApixTrace((prev) => `${prev}\n\nVerification failed: ${err.message}`);
       setApixRaw(null);
+      setApixTxHash("");
       setIsProcessingApix(false);
       setPendingApixTxnId(null);
       showToast(`Verification failed: ${err.message}`, "error");
@@ -516,6 +530,7 @@ const cancelApixPayment = () => {
     setShowApixModal(false);
     setIsProcessingApix(false);
     setPendingApixTxnId(null);
+    setApixTxHash("");
     if (currentTxnId) {
       updateTransaction(currentTxnId, {
         status: "failed",
@@ -734,13 +749,11 @@ const cancelApixPayment = () => {
               Agent
             </button>
           </div>
-          <div className="grid grid-cols-2 gap-3 text-sm">
+          <div className="grid w-full gap-3 text-sm sm:grid-cols-3">
             <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
               <p className="text-slate-500">Client Type</p>
               <p className="font-bold text-slate-900">{clientType}</p>
             </div>
-          </div>
-          <div className="grid grid-cols-2 gap-3 text-sm">
             <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
               <p className="text-slate-500">Network</p>
               <p className="font-bold text-slate-900">{activeNetworkLabel}</p>
@@ -760,7 +773,7 @@ const cancelApixPayment = () => {
               {isClaimingFaucet ? "Claiming APIX..." : faucetButtonLabel}
             </button>
             <p className="mt-2 text-xs text-slate-500 md:max-w-[220px]">
-              Server-funded faucet transfer from managed EOA. {faucetSummary}.
+              {faucetSummary}.
             </p>
           </div>
         </div>
@@ -886,6 +899,16 @@ const cancelApixPayment = () => {
             <pre className="response-box">
               {apixRaw ? JSON.stringify(apixRaw, null, 2) : "Raw payload will appear here."}
             </pre>
+            {apixTxHash ? (
+              <a
+                href={getTxExplorerUrl(apixTxHash)}
+                target="_blank"
+                rel="noreferrer"
+                className="mt-3 inline-block break-all text-xs font-medium text-sky-700 underline underline-offset-4 hover:text-sky-900 dark:text-sky-300 dark:hover:text-sky-100"
+              >
+                View tx on explorer: {apixTxHash}
+              </a>
+            ) : null}
           </div>
         </article>
       </section>
