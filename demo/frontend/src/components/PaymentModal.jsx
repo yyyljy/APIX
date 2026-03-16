@@ -2,7 +2,16 @@
 
 // Display the wallet payment modal for human wallet flow.
 // PaymentModal: helper function.
-const PaymentModal = ({ isOpen, onClose, onConfirm, paymentDetails, isProcessing }) => {
+const PaymentModal = ({
+    isOpen,
+    onClose,
+    onConfirm,
+    paymentDetails,
+    isProcessing,
+    onRequestFaucet = null,
+    isRequestingFaucet = false,
+    faucetSummary = 'Claim 10 APIX every 24 hours from the managed faucet wallet.',
+}) => {
     if (!isOpen) return null;
 
     const { amount, currency, recipient, requestId, chainId, network } = paymentDetails;
@@ -57,6 +66,21 @@ const PaymentModal = ({ isOpen, onClose, onConfirm, paymentDetails, isProcessing
                         By confirming, your wallet signs and submits a transaction. API access is granted after payment
                         proof verification.
                     </p>
+
+                    {typeof onRequestFaucet === 'function' ? (
+                        <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4">
+                            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Need test tokens first?</p>
+                            <p className="mt-2 text-sm text-slate-700">{faucetSummary}</p>
+                            <button
+                                type="button"
+                                onClick={onRequestFaucet}
+                                disabled={isProcessing || isRequestingFaucet}
+                                className="btn btn-secondary mt-4 w-full disabled:cursor-not-allowed disabled:opacity-70"
+                            >
+                                {isRequestingFaucet ? 'Claiming APIX...' : 'Claim APIX from Faucet'}
+                            </button>
+                        </div>
+                    ) : null}
 
                     <button
                         onClick={onConfirm}

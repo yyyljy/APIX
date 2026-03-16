@@ -51,8 +51,8 @@ export default function MainLayout({ children }) {
 
       <footer className="border-t border-slate-200 bg-white/70">
         <div className="mx-auto flex w-full max-w-6xl flex-col gap-2 px-4 py-6 text-xs text-slate-500 md:flex-row md:items-center md:justify-between md:px-6">
-          <span>2026 APIX Marketplace Demo Environment</span>
-          <span>Identical Resource, Dual Payment Rails</span>
+          <span>2026 APIX Monetization Demo Environment</span>
+          <span>HTTP 402 · On-chain verification · Retry access flow</span>
         </div>
       </footer>
     </div>

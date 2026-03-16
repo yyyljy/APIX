@@ -212,6 +212,7 @@ def run_demo():
     else:
         load_env_file(os.path.join(project_root, ".env"), env)
         load_env_file(os.path.join(project_root, "demo", "backend", ".env"), env)
+        load_env_file(os.path.join(project_root, "demo", "frontend", ".env"), env)
 
     args.jwt_secret = args.jwt_secret.strip() or env.get("APIX_JWT_SECRET", "").strip()
     args.allowed_origins = args.allowed_origins.strip() or env.get(
@@ -231,18 +232,18 @@ def run_demo():
     env.setdefault("APIX_ENV", "development")
     env.setdefault("APIX_JWT_KID", "dev-v1")
     env.setdefault("APIX_MIN_CONFIRMATIONS", "1")
-    env.setdefault("APIX_CHAIN_ID", "43114")
-    env.setdefault("APIX_NETWORK", "eip155:43114")
-    env.setdefault("APIX_PAYMENT_CURRENCY", "AVAX")
+    env.setdefault("APIX_CHAIN_ID", "402")
+    env.setdefault("APIX_NETWORK", "eip155:402")
+    env.setdefault("APIX_PAYMENT_CURRENCY", "APIX")
     env.setdefault("APIX_PAYMENT_AMOUNT", "0.1")
     env.setdefault("APIX_PAYMENT_AMOUNT_WEI", "100000000000000000")
     env.setdefault("APIX_PAYMENT_RECIPIENT", "0x0B3F82F42d05cEb8E4b33180Af782c0ccbDB25FC")
     env["APIX_ALLOWED_ORIGINS"] = args.allowed_origins
     env.setdefault("VITE_API_BASE_URL", "http://localhost:3000")
-    env.setdefault("VITE_AVALANCHE_CHAIN_ID", "43114")
-    env.setdefault("VITE_AVALANCHE_NETWORK_NAME", "Avalanche C-Chain")
-    env.setdefault("VITE_AVALANCHE_RPC_URL", "https://api.avax.network/ext/bc/C/rpc")
-    env.setdefault("VITE_AVALANCHE_BLOCK_EXPLORER", "https://snowtrace.io")
+    env.setdefault("VITE_AVALANCHE_CHAIN_ID", "402")
+    env.setdefault("VITE_AVALANCHE_NETWORK_NAME", "APIX")
+    env.setdefault("VITE_AVALANCHE_RPC_URL", "https://subnets.avax.network/apix/testnet/rpc")
+    env.setdefault("VITE_AVALANCHE_BLOCK_EXPLORER", "https://explorer-test.avax.network/apix")
     env.setdefault("APIX_SESSION_STORE_PATH", os.path.abspath(".tmp/apix-session-store.json"))
     env.setdefault("APIX_VERIFICATION_STORE_PATH", os.path.abspath(".tmp/apix-verification-store.json"))
     if args.api_base_url.strip():
@@ -261,6 +262,19 @@ def run_demo():
             print("Error: verification requires APIX_VERIFICATION_RPC_URL or APIX_VERIFICATION_RPC_URL_FILE.")
             sys.exit(1)
     env["APIX_VERIFICATION_RPC_URL"] = verification_rpc_url
+
+    print(
+        "Resolved frontend chain config:",
+        f"name={env.get('VITE_AVALANCHE_NETWORK_NAME', '')}",
+        f"chainId={env.get('VITE_AVALANCHE_CHAIN_ID', '')}",
+        f"rpc={env.get('VITE_AVALANCHE_RPC_URL', '')}"
+    )
+    print(
+        "Resolved backend chain config:",
+        f"network={env.get('APIX_NETWORK', '')}",
+        f"chainId={env.get('APIX_CHAIN_ID', '')}",
+        f"rpc={env.get('APIX_VERIFICATION_RPC_URL', '')}"
+    )
 
     npm_bin = resolve_npm_bin()
     if not npm_bin:

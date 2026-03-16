@@ -5,9 +5,15 @@ import {
   fetchProxyResource,
   fetchStripeProduct,
   getErrorSnapshot,
+  requestFaucetClaim,
   verifyPayment,
 } from "../utils/api";
-import { ensureWalletChain, getPaymentNetwork, getPreferredWalletProvider } from "../utils/chain";
+import {
+  ensureWalletChain,
+  getFaucetClaimConfig,
+  getPaymentNetwork,
+  getPreferredWalletProvider,
+} from "../utils/chain";
 import { createTransaction, updateTransaction } from "../utils/transactions";
 
 // Demo page controller for Stripe and APIX payment demonstration flows.
@@ -27,11 +33,23 @@ const DemoPage = () => {
   const [agentTxHash, setAgentTxHash] = useState("");
   const [toastMessage, setToastMessage] = useState("");
   const [toastType, setToastType] = useState("info");
+  const [isClaimingFaucet, setIsClaimingFaucet] = useState(false);
   const toastTimerRef = useRef(null);
   const paymentFlowRef = useRef(0);
+  const defaultChainContext = {
+    chainId: import.meta.env.VITE_AVALANCHE_CHAIN_ID,
+    network: import.meta.env.VITE_AVALANCHE_NETWORK_NAME,
+  };
+  const activePaymentContext = paymentDetails || defaultChainContext;
+  const faucetChainContext = defaultChainContext;
   const paymentPriceLabel = paymentDetails
     ? `${paymentDetails.amount} ${paymentDetails.currency}`
     : "0.1 APIX";
+  const activeNetworkLabel = getPaymentNetwork(activePaymentContext);
+  const faucetNetworkLabel = getPaymentNetwork(faucetChainContext);
+  const faucetConfig = getFaucetClaimConfig(faucetChainContext);
+  const faucetSummary = `${faucetConfig.amount} ${faucetConfig.tokenSymbol} per wallet, once every ${faucetConfig.cooldownHours} hours`;
+  const faucetButtonLabel = `Claim ${faucetConfig.amount} ${faucetConfig.tokenSymbol}`;
 
 // showToast: helper function.
   const showToast = (message, type = "info") => {
@@ -74,6 +92,54 @@ const runWithTimeout = (promise, timeoutMs, timeoutMessage) => {
           reject(error);
         });
     });
+  };
+
+  // Convert wallet/provider errors into concise user-facing messages.
+// normalizeWalletError: helper function.
+const normalizeWalletError = (error, fallbackMessage = "Wallet request failed.") => {
+    if (!error) {
+      return fallbackMessage;
+    }
+
+    if (error?.code === 4001) {
+      return "Wallet request was rejected.";
+    }
+
+    const message = String(
+      error?.reason
+      || error?.shortMessage
+      || error?.info?.error?.message
+      || error?.data?.message
+      || error?.message
+      || fallbackMessage
+    ).trim();
+    const lowered = message.toLowerCase();
+
+    if (lowered.includes("already handling a request")) {
+      return "Wallet is already handling another request. Please finish it and try again.";
+    }
+
+    if (
+      lowered.includes("user denied")
+      || lowered.includes("user rejected")
+      || lowered.includes("wallet popup was closed")
+      || lowered.includes("popup was closed")
+    ) {
+      return "Wallet request was rejected.";
+    }
+
+    if (
+      lowered.includes("cooldown")
+      || lowered.includes("24 hours")
+      || lowered.includes("24h")
+      || lowered.includes("claim period")
+      || lowered.includes("too soon")
+      || lowered.includes("wait before claiming again")
+    ) {
+      return `Faucet cooldown active. Try again after ${faucetConfig.cooldownHours} hours.`;
+    }
+
+    return message || fallbackMessage;
   };
 
   // Mark flow failure and finalize UI + transaction state in one place.
@@ -478,6 +544,60 @@ const cancelApixPayment = () => {
     await verifyApixTransaction(agentTxHash);
   };
 
+  // Request APIX from the managed faucet using the connected wallet address.
+// claimApixFromFaucet: helper function.
+  const claimApixFromFaucet = async () => {
+    if (isClaimingFaucet) return;
+
+    setIsClaimingFaucet(true);
+    try {
+      const { provider, source } = getPreferredWalletProvider();
+      setApixTrace(
+        (prev) =>
+          `${prev || "Faucet claim"}\n\nStarting faucet claim.\nNetwork: ${faucetNetworkLabel}\nWallet provider: ${source}\nAllowance: ${faucetSummary}`
+      );
+
+      await runWithTimeout(
+        ensureWalletChain(faucetChainContext, provider),
+        import.meta.env.VITE_APIX_WALLET_SETUP_TIMEOUT_MS,
+        "Wallet setup timed out before faucet claim."
+      );
+
+      const browserProvider = new ethers.BrowserProvider(provider);
+      const signer = await browserProvider.getSigner();
+      const walletAddress = await signer.getAddress();
+      const faucetResponse = await runWithTimeout(
+        requestFaucetClaim(walletAddress),
+        import.meta.env.VITE_APIX_WALLET_SIGN_TIMEOUT_MS,
+        "Backend faucet request timed out."
+      );
+      const faucetPayload = await faucetResponse.json();
+
+      if (!faucetResponse.ok || !faucetPayload?.success) {
+        throw new Error(
+          faucetPayload?.error?.message
+          || faucetPayload?.message
+          || "Unable to complete faucet claim."
+        );
+      }
+
+      setApixTrace(
+        (prev) =>
+          `${prev}\n\nFaucet transfer submitted.\nWallet: ${walletAddress}\nTx Hash: ${faucetPayload.raw?.tx_hash || faucetPayload.data?.tx_hash || faucetPayload.tx_hash}\nAwaiting network confirmation...`
+      );
+      showToast(
+        `${faucetConfig.amount} ${faucetConfig.tokenSymbol} faucet transfer submitted.`,
+        "success"
+      );
+    } catch (err) {
+      const message = normalizeWalletError(err, "Unable to complete faucet claim.");
+      setApixTrace((prev) => `${prev || "Faucet claim"}\n\nFaucet claim failed: ${message}`);
+      showToast(`Faucet claim failed: ${message}`, "error");
+    } finally {
+      setIsClaimingFaucet(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       {showStripeModal && (
@@ -555,6 +675,9 @@ const cancelApixPayment = () => {
         onConfirm={confirmApixPayment}
         paymentDetails={paymentDetails}
         isProcessing={isProcessingApix}
+        onRequestFaucet={claimApixFromFaucet}
+        isRequestingFaucet={isClaimingFaucet}
+        faucetSummary={faucetSummary}
       />
 
       {toastMessage ? (
@@ -620,12 +743,25 @@ const cancelApixPayment = () => {
           <div className="grid grid-cols-2 gap-3 text-sm">
             <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
               <p className="text-slate-500">Network</p>
-              <p className="font-bold text-slate-900">Avalanche C-Chain</p>
+              <p className="font-bold text-slate-900">{activeNetworkLabel}</p>
             </div>
             <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
               <p className="text-slate-500">Pricing Unit</p>
               <p className="font-bold text-slate-900">{paymentPriceLabel}</p>
             </div>
+          </div>
+          <div className="w-full md:w-auto">
+            <button
+              type="button"
+              onClick={claimApixFromFaucet}
+              disabled={isClaimingFaucet}
+              className="btn btn-secondary w-full disabled:opacity-70 md:w-auto"
+            >
+              {isClaimingFaucet ? "Claiming APIX..." : faucetButtonLabel}
+            </button>
+            <p className="mt-2 text-xs text-slate-500 md:max-w-[220px]">
+              Server-funded faucet transfer from managed EOA. {faucetSummary}.
+            </p>
           </div>
         </div>
       </section>
@@ -694,12 +830,22 @@ const cancelApixPayment = () => {
             <li>3. Backend verifies proof and issues access.</li>
           </ol>
 
-          <button
-            onClick={initiateApixFlow}
-            className="btn btn-primary mt-5 w-full"
-          >
-            {`Buy with Crypto (${paymentPriceLabel})`}
-          </button>
+          <div className="mt-5 grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto]">
+            <button
+              onClick={initiateApixFlow}
+              className="btn btn-primary w-full"
+            >
+              {`Buy with Crypto (${paymentPriceLabel})`}
+            </button>
+            <button
+              type="button"
+              onClick={claimApixFromFaucet}
+              disabled={isClaimingFaucet}
+              className="btn btn-secondary w-full disabled:opacity-70 sm:w-auto"
+            >
+              {isClaimingFaucet ? "Claiming..." : "Need APIX?"}
+            </button>
+          </div>
 
           <div className="mt-5">
             {clientType === "agent" && paymentDetails ? (

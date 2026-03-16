@@ -39,7 +39,16 @@ async function run() {
         issuer: 'test-suite'
     });
     const sessionStorePath = createSeededSessionStore(proofToken);
+    const faucetStorePath = path.join(os.tmpdir(), `apix-faucet-store-${Date.now()}.json`);
     process.env.APIX_SESSION_STORE_PATH = sessionStorePath;
+    process.env.APIX_FAUCET_STORE_PATH = faucetStorePath;
+    process.env.APIX_FAUCET_MOCK_TX_HASH = `0x${'1'.repeat(64)}`;
+    process.env.APIX_FAUCET_AMOUNT = '10';
+    process.env.APIX_FAUCET_TOKEN_DECIMALS = '18';
+    process.env.APIX_FAUCET_COOLDOWN_SECONDS = '86400';
+    process.env.APIX_CHAIN_ID = '402';
+    process.env.APIX_NETWORK = 'eip155:402';
+    process.env.APIX_PAYMENT_CURRENCY = 'APIX';
 
     let server: http.Server | null = null;
     try {
@@ -52,6 +61,7 @@ async function run() {
             server?.once('listening', () => resolve());
             server?.once('error', reject);
         });
+        assert.ok(server, 'expected test server instance');
         assert.ok(server.address() && typeof server.address() !== 'string', 'Test server should have address object');
 
         const client = request(server);
@@ -85,6 +95,24 @@ async function run() {
             .set('Authorization', 'Bearer metrics-test-token');
         assert.equal(metricsAuthorized.status, 200);
 
+        const invalidFaucet = await client
+            .post('/faucet/claim')
+            .send({ walletAddress: 'invalid-wallet' });
+        assert.equal(invalidFaucet.status, 400);
+
+        const targetWallet = '0x1111111111111111111111111111111111111111';
+        const faucetSuccess = await client
+            .post('/faucet/claim')
+            .send({ walletAddress: targetWallet });
+        assert.equal(faucetSuccess.status, 200);
+        assert.equal(faucetSuccess.body?.tx_hash, process.env.APIX_FAUCET_MOCK_TX_HASH);
+        assert.equal(faucetSuccess.body?.wallet, targetWallet);
+
+        const faucetCooldown = await client
+            .post('/faucet/claim')
+            .send({ walletAddress: targetWallet });
+        assert.equal(faucetCooldown.status, 429);
+
         console.log('demo/backend tests passed');
     } catch (error: any) {
         if (error?.code === 'EPERM') {
@@ -107,6 +135,7 @@ async function run() {
             }
         }
         fs.rmSync(sessionStorePath, { force: true });
+        fs.rmSync(faucetStorePath, { force: true });
     }
 }
 

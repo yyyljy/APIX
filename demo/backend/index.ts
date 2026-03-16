@@ -3,6 +3,9 @@ import cors from 'cors';
 import { ApixMiddleware } from 'apix-sdk-node';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
 
 dotenv.config();
 
@@ -127,6 +130,26 @@ const API_ERROR_DEFINITIONS: Record<string, ApiErrorDefinition> = {
         message: "Payment required.",
         retryable: false
     },
+    faucet_invalid_wallet: {
+        status: 400,
+        message: "Wallet address is invalid.",
+        retryable: false
+    },
+    faucet_unavailable: {
+        status: 503,
+        message: "Faucet is not configured.",
+        retryable: false
+    },
+    faucet_cooldown_active: {
+        status: 429,
+        message: "Faucet cooldown is active.",
+        retryable: false
+    },
+    faucet_transfer_failed: {
+        status: 502,
+        message: "Faucet transfer failed.",
+        retryable: true
+    },
     request_failed: {
         status: 400,
         message: "Request failed.",
@@ -213,6 +236,158 @@ const apix = new ApixMiddleware(apixConfig);
 const PAYMENT_DISPLAY = {
     amount: (process.env.APIX_PAYMENT_AMOUNT || '0.1').trim() || '0.1',
     currency: (process.env.APIX_PAYMENT_CURRENCY || 'AVAX').trim() || 'AVAX'
+};
+
+type FaucetClaimRecord = Record<string, number>;
+type FaucetConfig = {
+    amount: string;
+    amountWei: string;
+    blockExplorerUrl: string;
+    chainId: number;
+    cooldownSeconds: number;
+    currency: string;
+    mockTxHash: string;
+    network: string;
+    privateKey: string;
+    recipientStorePath: string;
+    rpcUrl: string;
+};
+
+// parsePositiveInt: helper function.
+const parsePositiveInt = (value: string | undefined, fallback: number) => {
+    const parsed = Number.parseInt(String(value || '').trim(), 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+// parseAmountToWei: helper function.
+const parseAmountToWei = (amount: string, decimals: number) => {
+    const trimmed = String(amount || '').trim();
+    if (!trimmed) {
+        throw new Error('faucet amount is required');
+    }
+    if (!/^\d+(\.\d+)?$/.test(trimmed)) {
+        throw new Error(`invalid faucet amount "${amount}"`);
+    }
+
+    const splitAmount = trimmed.split('.');
+    const wholePart = splitAmount[0] || '0';
+    const fractionPart = splitAmount[1] || '';
+    const sanitizedWhole = wholePart.replace(/^0+/, '') || '0';
+    const normalizedFraction = fractionPart.padEnd(decimals, '0').slice(0, decimals);
+    const combined = `${sanitizedWhole}${normalizedFraction}`.replace(/^0+/, '') || '0';
+    return BigInt(combined).toString();
+};
+
+// resolveFaucetConfig: helper function.
+const resolveFaucetConfig = (): FaucetConfig => {
+    const amount = (process.env.APIX_FAUCET_AMOUNT || process.env.VITE_APIX_FAUCET_AMOUNT || '10').trim() || '10';
+    const decimals = parsePositiveInt(process.env.APIX_FAUCET_TOKEN_DECIMALS || process.env.VITE_APIX_FAUCET_TOKEN_DECIMALS, 18);
+    const chainId = parsePositiveInt(process.env.APIX_CHAIN_ID, 402);
+    const network = (process.env.APIX_NETWORK || `eip155:${chainId}`).trim() || `eip155:${chainId}`;
+    const rpcUrl = (
+        process.env.APIX_FAUCET_RPC_URL
+        || process.env.APIX_VERIFICATION_RPC_URL
+        || process.env.VITE_AVALANCHE_RPC_URL
+        || 'https://subnets.avax.network/apix/testnet/rpc'
+    ).trim();
+    const privateKey = (process.env.APIX_FAUCET_ADMIN_PRIVATE_KEY || process.env.APIX_FAUCET_PRIVATE_KEY || '').trim();
+    const blockExplorerUrl = (
+        process.env.APIX_FAUCET_BLOCK_EXPLORER_URL
+        || process.env.VITE_AVALANCHE_BLOCK_EXPLORER
+        || 'https://explorer-test.avax.network/apix'
+    ).trim();
+
+    return {
+        amount,
+        amountWei: parseAmountToWei(amount, decimals),
+        blockExplorerUrl,
+        chainId,
+        cooldownSeconds: parsePositiveInt(process.env.APIX_FAUCET_COOLDOWN_SECONDS, 24 * 60 * 60),
+        currency: (process.env.APIX_FAUCET_CURRENCY || process.env.APIX_PAYMENT_CURRENCY || 'APIX').trim() || 'APIX',
+        mockTxHash: (process.env.APIX_FAUCET_MOCK_TX_HASH || '').trim(),
+        network,
+        privateKey,
+        recipientStorePath: path.resolve(process.env.APIX_FAUCET_STORE_PATH || '.tmp/apix-faucet-claims.json'),
+        rpcUrl,
+    };
+};
+
+// isWalletAddress: helper function.
+const isWalletAddress = (value: string) => /^0x[a-fA-F0-9]{40}$/.test(value.trim());
+
+// readFaucetClaimStore: helper function.
+const readFaucetClaimStore = (filePath: string): FaucetClaimRecord => {
+    try {
+        if (!fs.existsSync(filePath)) {
+            return {};
+        }
+        const raw = fs.readFileSync(filePath, 'utf8');
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch (_error) {
+        return {};
+    }
+};
+
+// writeFaucetClaimStore: helper function.
+const writeFaucetClaimStore = (filePath: string, snapshot: FaucetClaimRecord) => {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, JSON.stringify(snapshot, null, 2), 'utf8');
+};
+
+// getCooldownRemainingSeconds: helper function.
+const getCooldownRemainingSeconds = (walletAddress: string, filePath: string, cooldownSeconds: number) => {
+    const claims = readFaucetClaimStore(filePath);
+    const normalized = walletAddress.toLowerCase();
+    const lastClaimAt = claims[normalized];
+    if (!Number.isFinite(lastClaimAt) || !lastClaimAt) {
+        return 0;
+    }
+    const nextClaimAt = Number(lastClaimAt) + cooldownSeconds * 1000;
+    const remainingMs = nextClaimAt - Date.now();
+    return remainingMs > 0 ? Math.ceil(remainingMs / 1000) : 0;
+};
+
+// markFaucetClaimed: helper function.
+const markFaucetClaimed = (walletAddress: string, filePath: string) => {
+    const claims = readFaucetClaimStore(filePath);
+    claims[walletAddress.toLowerCase()] = Date.now();
+    writeFaucetClaimStore(filePath, claims);
+};
+
+// sendFaucetTransfer: helper function.
+const sendFaucetTransfer = (walletAddress: string, faucetConfig: FaucetConfig) => {
+    if (faucetConfig.mockTxHash) {
+        return faucetConfig.mockTxHash;
+    }
+
+    const output = execFileSync(
+        'cast',
+        [
+            'send',
+            '--async',
+            '--json',
+            '--rpc-url',
+            faucetConfig.rpcUrl,
+            '--private-key',
+            faucetConfig.privateKey,
+            '--chain',
+            String(faucetConfig.chainId),
+            '--value',
+            faucetConfig.amountWei,
+            walletAddress,
+        ],
+        {
+            encoding: 'utf8',
+            maxBuffer: 1024 * 1024,
+        }
+    );
+
+    const txHashMatch = String(output || '').match(/0x[a-fA-F0-9]{64}/);
+    if (!txHashMatch?.[0]) {
+        throw new Error(`cast send did not return a transaction hash. output=${String(output || '').trim()}`);
+    }
+    return txHashMatch[0];
 };
 
 const parsePaymentProofValue = (rawValue: string): string => {
@@ -451,6 +626,80 @@ app.get('/agent-apix-product', apixProductMiddleware('agent'), (req: Request, re
         proof: (req as any).apixProof,
         ...data
     });
+});
+
+app.post('/faucet/claim', (req: Request, res: Response) => {
+    const requestId = (req as any).requestId;
+    const walletAddress = String(req.body?.walletAddress || req.body?.address || '').trim();
+
+    if (!walletAddress || !isWalletAddress(walletAddress)) {
+        sendError(res, "faucet_invalid_wallet", {
+            requestId,
+            message: "A valid walletAddress is required."
+        });
+        return;
+    }
+
+    try {
+        const faucetConfig = resolveFaucetConfig();
+        if ((!faucetConfig.privateKey && !faucetConfig.mockTxHash) || !faucetConfig.rpcUrl) {
+            sendError(res, "faucet_unavailable", {
+                requestId,
+                message: "Faucet admin private key or RPC URL is not configured."
+            });
+            return;
+        }
+
+        const cooldownRemainingSeconds = getCooldownRemainingSeconds(
+            walletAddress,
+            faucetConfig.recipientStorePath,
+            faucetConfig.cooldownSeconds
+        );
+        if (cooldownRemainingSeconds > 0) {
+            sendError(res, "faucet_cooldown_active", {
+                requestId,
+                message: `Faucet cooldown active. Try again in ${cooldownRemainingSeconds} seconds.`
+            });
+            return;
+        }
+
+        const txHash = sendFaucetTransfer(walletAddress, faucetConfig);
+        markFaucetClaimed(walletAddress, faucetConfig.recipientStorePath);
+        logEvent("faucet.transfer_submitted", {
+            request_id: requestId,
+            wallet: walletAddress,
+            tx_hash: txHash,
+            chain_id: faucetConfig.chainId,
+            network: faucetConfig.network,
+            amount: faucetConfig.amount,
+            currency: faucetConfig.currency,
+        });
+
+        const blockExplorer = faucetConfig.blockExplorerUrl.replace(/\/$/, '');
+        res.json({
+            success: true,
+            request_id: requestId,
+            chain_id: faucetConfig.chainId,
+            network: faucetConfig.network,
+            wallet: walletAddress,
+            amount: faucetConfig.amount,
+            amount_wei: faucetConfig.amountWei,
+            currency: faucetConfig.currency,
+            cooldown_seconds: faucetConfig.cooldownSeconds,
+            tx_hash: txHash,
+            explorer_url: blockExplorer ? `${blockExplorer}/tx/${txHash}` : '',
+        });
+    } catch (error: any) {
+        logEvent("faucet.transfer_failed", {
+            request_id: requestId,
+            wallet: walletAddress,
+            message: String(error?.message || error),
+        });
+        sendError(res, "faucet_transfer_failed", {
+            requestId,
+            message: `Faucet transfer failed: ${String(error?.message || error)}`
+        });
+    }
 });
 
 export { app };

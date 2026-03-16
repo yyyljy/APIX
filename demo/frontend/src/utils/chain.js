@@ -1,8 +1,13 @@
-const DEFAULT_CHAIN_ID = Number.parseInt((import.meta.env.VITE_AVALANCHE_CHAIN_ID || '43114').trim(), 10);
-const FALLBACK_CHAIN_ID = Number.isFinite(DEFAULT_CHAIN_ID) && DEFAULT_CHAIN_ID > 0 ? DEFAULT_CHAIN_ID : 43114;
-const FALLBACK_RPC_URL = import.meta.env.VITE_AVALANCHE_RPC_URL || 'https://api.avax.network/ext/bc/C/rpc';
-const FALLBACK_NETWORK_NAME = import.meta.env.VITE_AVALANCHE_NETWORK_NAME || 'Avalanche C-Chain';
-const FALLBACK_BLOCK_EXPLORER = import.meta.env.VITE_AVALANCHE_BLOCK_EXPLORER || 'https://snowtrace.io';
+const DEFAULT_CHAIN_ID = Number.parseInt((import.meta.env.VITE_AVALANCHE_CHAIN_ID || '402').trim(), 10);
+const FALLBACK_CHAIN_ID = Number.isFinite(DEFAULT_CHAIN_ID) && DEFAULT_CHAIN_ID > 0 ? DEFAULT_CHAIN_ID : 402;
+const FALLBACK_RPC_URL = import.meta.env.VITE_AVALANCHE_RPC_URL || 'https://subnets.avax.network/apix/testnet/rpc';
+const FALLBACK_NETWORK_NAME = import.meta.env.VITE_AVALANCHE_NETWORK_NAME || 'APIX';
+const FALLBACK_BLOCK_EXPLORER = import.meta.env.VITE_AVALANCHE_BLOCK_EXPLORER || 'https://explorer-test.avax.network/apix';
+const FALLBACK_FAUCET_URL = String(import.meta.env.VITE_AVALANCHE_FAUCET_URL || '').trim();
+const FALLBACK_FAUCET_TOKEN_SYMBOL = String(import.meta.env.VITE_APIX_FAUCET_TOKEN_SYMBOL || 'APIX').trim() || 'APIX';
+const FALLBACK_FAUCET_AMOUNT = String(import.meta.env.VITE_APIX_FAUCET_AMOUNT || '10').trim() || '10';
+const FALLBACK_FAUCET_TOKEN_DECIMALS = Number.parseInt(String(import.meta.env.VITE_APIX_FAUCET_TOKEN_DECIMALS || '18').trim(), 10);
+const FALLBACK_FAUCET_COOLDOWN_HOURS = Number.parseInt(String(import.meta.env.VITE_APIX_FAUCET_COOLDOWN_HOURS || '24').trim(), 10);
 const PREFERRED_WALLET = String((import.meta.env.VITE_PREFERRED_WALLET || 'core')).trim().toLowerCase();
 
 // Normalize provider names into a lower-case trimmed string.
@@ -170,6 +175,46 @@ export const getPaymentNetwork = (details) => {
     return `eip155:${chainId}`;
 };
 
+// getBlockExplorerUrl: helper function.
+export const getBlockExplorerUrl = () => FALLBACK_BLOCK_EXPLORER;
+
+// getFaucetUrl: helper function.
+export const getFaucetUrl = (details) => {
+    const explicit = String(details?.faucetUrl || details?.faucet_url || '').trim();
+    if (explicit) {
+        return explicit;
+    }
+    if (FALLBACK_FAUCET_URL) {
+        return FALLBACK_FAUCET_URL;
+    }
+    if (!FALLBACK_BLOCK_EXPLORER) {
+        return '';
+    }
+    return `${FALLBACK_BLOCK_EXPLORER.replace(/\/$/, '')}/faucet`;
+};
+
+// Return the configured managed-faucet display settings for the active network.
+// getFaucetClaimConfig: helper function.
+export const getFaucetClaimConfig = (details) => {
+    const amount = String(details?.faucetAmount || details?.faucet_amount || FALLBACK_FAUCET_AMOUNT).trim() || FALLBACK_FAUCET_AMOUNT;
+    const tokenSymbol = String(details?.faucetTokenSymbol || details?.faucet_token_symbol || FALLBACK_FAUCET_TOKEN_SYMBOL).trim() || FALLBACK_FAUCET_TOKEN_SYMBOL;
+    const decimals = Number.parseInt(
+        String(details?.faucetTokenDecimals ?? details?.faucet_token_decimals ?? FALLBACK_FAUCET_TOKEN_DECIMALS).trim(),
+        10
+    );
+    const cooldownHours = Number.parseInt(
+        String(details?.faucetCooldownHours ?? details?.faucet_cooldown_hours ?? FALLBACK_FAUCET_COOLDOWN_HOURS).trim(),
+        10
+    );
+
+    return {
+        amount,
+        cooldownHours: Number.isFinite(cooldownHours) && cooldownHours > 0 ? cooldownHours : 24,
+        decimals: Number.isFinite(decimals) && decimals >= 0 ? decimals : 18,
+        tokenSymbol,
+    };
+};
+
 // Ensure wallet is connected and on the expected chain for payment.
 // ensureWalletChain: helper function.
 export const ensureWalletChain = async (details, provider = null) => {
@@ -177,9 +222,7 @@ export const ensureWalletChain = async (details, provider = null) => {
     const chainId = getPaymentChainId(details);
     const chainIdHex = toHexChainId(chainId);
     const network = getPaymentNetwork(details);
-    const chainName = network.includes('Avalanche') || network.includes('avax')
-        ? FALLBACK_NETWORK_NAME
-        : `Chain ${chainId}`;
+    const chainName = FALLBACK_NETWORK_NAME || network || `Chain ${chainId}`;
     const ethereum = selectedProvider;
 
 
@@ -227,8 +270,8 @@ export const ensureWalletChain = async (details, provider = null) => {
                         chainId: chainIdHex,
                         chainName: chainName,
                         nativeCurrency: {
-                            name: 'Avalanche',
-                            symbol: 'AVAX',
+                            name: 'APIX',
+                            symbol: 'APIX',
                             decimals: 18,
                         },
                         rpcUrls: [FALLBACK_RPC_URL],

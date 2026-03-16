@@ -57,6 +57,26 @@ const ERROR_TONE_FALLBACK = {
     message: "Payment required to access this resource.",
     retryable: false,
   },
+  faucet_invalid_wallet: {
+    status: 400,
+    message: "Wallet address is invalid.",
+    retryable: false,
+  },
+  faucet_unavailable: {
+    status: 503,
+    message: "Faucet is not configured.",
+    retryable: false,
+  },
+  faucet_cooldown_active: {
+    status: 429,
+    message: "Faucet cooldown is active.",
+    retryable: false,
+  },
+  faucet_transfer_failed: {
+    status: 502,
+    message: "Faucet transfer failed.",
+    retryable: true,
+  },
   invalid_apix_session: {
     status: 403,
     message: "Invalid or expired payment session.",
@@ -301,5 +321,40 @@ export const fetchStripeProduct = async () => {
   } catch (error) {
     console.error("Network Error:", error);
     return networkErrorResponse("Backend stripe request failed");
+  }
+};
+
+// requestFaucetClaim: helper function.
+export const requestFaucetClaim = async (walletAddress) => {
+  try {
+    const res = await fetch(`${BACKEND_URL}/faucet/claim`, {
+      method: "POST",
+      headers: buildHeaders({
+        "Content-Type": "application/json",
+      }),
+      body: JSON.stringify({
+        walletAddress,
+      }),
+    });
+
+    const body = await res.json();
+
+    if (res.status >= 200 && res.status < 300) {
+      return makeResponse(res.status, {
+        success: true,
+        data: body,
+        raw: body,
+      });
+    }
+
+    const normalized = normalizeErrorPayload(body, res.status);
+    return makeResponse(res.status, {
+      success: false,
+      error: normalized,
+      raw: body,
+    });
+  } catch (error) {
+    console.error("Network Error:", error);
+    return networkErrorResponse("Backend faucet request failed");
   }
 };
